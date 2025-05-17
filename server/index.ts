@@ -1,11 +1,7 @@
+import express from 'express';
 import { createServer } from 'http';
-import { Server, Socket } from 'socket.io';
-import {
-  ClientToServerEvents,
-  ServerToClientEvents,
-  InterServerEvents,
-  SocketData
-} from '../src/types/socket';
+import cors from 'cors';
+import { v4 as uuidv4 } from 'uuid';
 import {
   GameState,
   Player,
@@ -13,258 +9,412 @@ import {
   Room,
   PlayerToken
 } from '../src/types/game';
-import { v4 as uuidv4 } from 'uuid';
+import {
+  saveRoom,
+  getRoom,
+  deleteRoom,
+  getAllRooms,
+  savePlayer,
+  getPlayer,
+  deletePlayer,
+  saveGameState,
+  getGameState
+} from '../src/lib/redis';
 
-// Initialize HTTP server
-const httpServer = createServer();
+// Initialize Express app
+const app = express();
+app.use(cors());
+app.use(express.json());
 
-// Initialize Socket.IO server
-const io = new Server<
-  ClientToServerEvents,
-  ServerToClientEvents,
-  InterServerEvents,
-  SocketData
->(httpServer, {
-  cors: {
-    origin: '*',
-    methods: ['GET', 'POST']
-  }
-});
+// Create HTTP server
+const httpServer = createServer(app);
 
-// Game data
-const rooms: Map<string, Room> = new Map();
-const players: Map<string, Player> = new Map();
+// Connected SSE clients
+const clients = new Map<string, express.Response>();
 
 // Available player tokens
 const availableTokens: PlayerToken[] = [
   'car', 'boot', 'hat', 'ship', 'dog', 'cat', 'iron', 'thimble'
 ];
 
-// Socket.IO connection handler
-io.on('connection', (socket: Socket<ClientToServerEvents, ServerToClientEvents, InterServerEvents, SocketData>) => {
-  console.log(`Player connected: ${socket.id}`);
+// SSE endpoint
+app.get('/events', (req, res) => {
+  // Set SSE headers
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
 
-  // Create a new room
-  socket.on('createRoom', (name: string, callback: (roomId: string) => void) => {
-    const roomId = uuidv4();
-    const playerId = socket.id;
-    const playerName = name || `Player ${playerId.substring(0, 5)}`;
+  // Generate client ID
+  const clientId = req.query.clientId as string || uuidv4();
 
-    // Create player
-    const player: Player = {
-      id: playerId,
-      name: playerName,
-      token: availableTokens[0],
-      position: 0,
-      money: 1500,
-      properties: [],
-      inJail: false,
-      bankrupt: false,
-      isAI: false
-    };
+  // Store client connection
+  clients.set(clientId, res);
 
-    // Create room
-    const room: Room = {
-      id: roomId,
-      name: `${playerName}'s Room`,
-      host: playerId,
-      players: [player],
-      gameStarted: false,
-      gameState: null
-    };
+  // Send initial connection message
+  res.write(`data: ${JSON.stringify({ type: 'connected', payload: { clientId } })}\n\n`);
 
-    // Save player and room
-    players.set(playerId, player);
-    rooms.set(roomId, room);
-
-    // Join socket room
-    socket.join(roomId);
-    socket.data.roomId = roomId;
-    socket.data.playerId = playerId;
-    socket.data.playerName = playerName;
-
-    // Send callback with room ID
-    callback(roomId);
-
-    // Broadcast updated rooms list
-    io.emit('roomsList', Array.from(rooms.values()));
+  // Handle client disconnect
+  req.on('close', () => {
+    clients.delete(clientId);
+    console.log(`Client disconnected: ${clientId}`);
   });
+});
 
-  // Join an existing room
-  socket.on('joinRoom', (roomId: string, playerName: string, callback: (success: boolean, message?: string) => void) => {
-    const room = rooms.get(roomId);
+// Helper function to send SSE event to all clients or specific room
+const sendEvent = (type: string, payload: any, roomId?: string) => {
+  const message = JSON.stringify({ type, payload });
 
-    if (!room) {
-      callback(false, 'Room not found');
-      return;
+  for (const [clientId, client] of clients.entries()) {
+    if (!roomId || (payload.room && payload.room.id === roomId)) {
+      client.write(`data: ${message}\n\n`);
     }
+  }
+};
 
-    if (room.gameStarted) {
-      callback(false, 'Game already started');
-      return;
-    }
+// API endpoints
+app.get('/api/rooms/:roomId', async (req, res) => {
+  const { roomId } = req.params;
 
-    if (room.players.length >= 8) {
-      callback(false, 'Room is full');
-      return;
-    }
+  const room = await getRoom(roomId);
 
-    const playerId = socket.id;
-    const name = playerName || `Player ${playerId.substring(0, 5)}`;
+  if (!room) {
+    return res.status(404).json({ error: 'Room not found' });
+  }
 
-    // Get available token
-    const usedTokens = room.players.map(p => p.token);
-    const availableToken = availableTokens.find(t => !usedTokens.includes(t)) || 'car';
+  res.json({ room });
+});
 
-    // Create player
-    const player: Player = {
-      id: playerId,
-      name,
-      token: availableToken,
-      position: 0,
-      money: 1500,
-      properties: [],
-      inJail: false,
-      bankrupt: false,
-      isAI: false
-    };
+app.post('/api/rooms', async (req, res) => {
+  const { playerName, clientId } = req.body;
 
-    // Add player to room
-    room.players.push(player);
-    players.set(playerId, player);
+  if (!playerName || !clientId) {
+    return res.status(400).json({ error: 'Player name and client ID are required' });
+  }
 
-    // Join socket room
-    socket.join(roomId);
-    socket.data.roomId = roomId;
-    socket.data.playerId = playerId;
-    socket.data.playerName = name;
+  const roomId = uuidv4();
+  const playerId = clientId;
+  const name = playerName || `Player ${playerId.substring(0, 5)}`;
 
-    // Send callback with success
-    callback(true);
+  // Create player
+  const player: Player = {
+    id: playerId,
+    name,
+    token: availableTokens[0],
+    position: 0,
+    money: 1500,
+    properties: [],
+    inJail: false,
+    bankrupt: false,
+    isAI: false
+  };
 
-    // Broadcast room update
-    io.to(roomId).emit('roomJoined', room);
+  // Create room
+  const room: Room = {
+    id: roomId,
+    name: `${name}'s Room`,
+    host: playerId,
+    players: [player],
+    gameStarted: false,
+    gameState: null
+  };
 
-    // Broadcast updated rooms list
-    io.emit('roomsList', Array.from(rooms.values()));
-  });
+  // Save to Redis
+  await savePlayer(player);
+  await saveRoom(room);
+
+  // Send SSE event
+  sendEvent('roomCreated', { room });
+
+  // Send updated rooms list
+  const rooms = await getAllRooms();
+  sendEvent('roomsList', { rooms });
+
+  res.json({ roomId });
+});
+
+app.post('/api/rooms/:roomId/join', async (req, res) => {
+  const { roomId } = req.params;
+  const { playerName, clientId } = req.body;
+
+  if (!playerName || !clientId) {
+    return res.status(400).json({ error: 'Player name and client ID are required' });
+  }
+
+  const room = await getRoom(roomId);
+
+  if (!room) {
+    return res.status(404).json({ error: 'Room not found' });
+  }
+
+  if (room.gameStarted) {
+    return res.status(400).json({ error: 'Game already started' });
+  }
+
+  if (room.players.length >= 8) {
+    return res.status(400).json({ error: 'Room is full' });
+  }
+
+  const playerId = clientId;
+  const name = playerName || `Player ${playerId.substring(0, 5)}`;
+
+  // Get available token
+  const usedTokens = room.players.map(p => p.token);
+  const availableToken = availableTokens.find(t => !usedTokens.includes(t)) || 'car';
+
+  // Create player
+  const player: Player = {
+    id: playerId,
+    name,
+    token: availableToken,
+    position: 0,
+    money: 1500,
+    properties: [],
+    inJail: false,
+    bankrupt: false,
+    isAI: false
+  };
+
+  // Add player to room
+  room.players.push(player);
+
+  // Save to Redis
+  await savePlayer(player);
+  await saveRoom(room);
+
+  // Send SSE event
+  sendEvent('roomJoined', { room }, roomId);
+
+  // Send updated rooms list
+  const rooms = await getAllRooms();
+  sendEvent('roomsList', { rooms });
+
+  res.json({ success: true, room });
+});
+
+app.post('/api/rooms/:roomId/ai', async (req, res) => {
+  const { roomId } = req.params;
+  const { clientId } = req.body;
+
+  const room = await getRoom(roomId);
+
+  if (!room) {
+    return res.status(404).json({ error: 'Room not found' });
+  }
+
+  if (room.gameStarted || room.players.length >= 8) {
+    return res.status(400).json({ error: 'Cannot add AI player' });
+  }
+
+  // Only host can add AI players
+  if (room.host !== clientId) {
+    return res.status(403).json({ error: 'Only host can add AI players' });
+  }
+
+  const aiId = `ai-${uuidv4()}`;
+  const aiName = `AI Player ${room.players.length + 1}`;
+
+  // Get available token
+  const usedTokens = room.players.map(p => p.token);
+  const availableToken = availableTokens.find(t => !usedTokens.includes(t)) || 'car';
+
+  // Create AI player
+  const aiPlayer: Player = {
+    id: aiId,
+    name: aiName,
+    token: availableToken,
+    position: 0,
+    money: 1500,
+    properties: [],
+    inJail: false,
+    bankrupt: false,
+    isAI: true
+  };
 
   // Add AI player to room
-  socket.on('addAIPlayer', (roomId: string) => {
-    const room = rooms.get(roomId);
+  room.players.push(aiPlayer);
 
-    if (!room || room.gameStarted || room.players.length >= 8) {
-      return;
-    }
+  // Save to Redis
+  await savePlayer(aiPlayer);
+  await saveRoom(room);
 
-    // Only host can add AI players
-    if (socket.data.playerId !== room.host) {
-      return;
-    }
+  // Send SSE event
+  sendEvent('roomJoined', { room }, roomId);
 
-    const aiId = `ai-${uuidv4()}`;
-    const aiName = `AI Player ${room.players.length + 1}`;
+  res.json({ success: true, room });
+});
 
-    // Get available token
-    const usedTokens = room.players.map(p => p.token);
-    const availableToken = availableTokens.find(t => !usedTokens.includes(t)) || 'car';
+// Start game endpoint
+app.post('/api/rooms/:roomId/start', async (req, res) => {
+  const { roomId } = req.params;
+  const { clientId } = req.body;
 
-    // Create AI player
-    const aiPlayer: Player = {
-      id: aiId,
-      name: aiName,
-      token: availableToken,
-      position: 0,
-      money: 1500,
-      properties: [],
-      inJail: false,
-      bankrupt: false,
-      isAI: true
-    };
+  const room = await getRoom(roomId);
 
-    // Add AI player to room
-    room.players.push(aiPlayer);
-    players.set(aiId, aiPlayer);
+  if (!room) {
+    return res.status(404).json({ error: 'Room not found' });
+  }
 
-    // Broadcast room update
-    io.to(roomId).emit('roomJoined', room);
-  });
+  if (room.gameStarted) {
+    return res.status(400).json({ error: 'Game already started' });
+  }
 
-  // Start game
-  socket.on('startGame', (roomId: string) => {
-    const room = rooms.get(roomId);
+  // Only host can start the game
+  if (room.host !== clientId) {
+    return res.status(403).json({ error: 'Only host can start the game' });
+  }
 
-    if (!room || room.gameStarted) {
-      return;
-    }
+  // Need at least 2 players to start
+  if (room.players.length < 2) {
+    return res.status(400).json({ error: 'Need at least 2 players to start the game' });
+  }
 
-    // Only host can start the game
-    if (socket.data.playerId !== room.host) {
-      return;
-    }
+  // Initialize game state
+  const gameState: GameState = {
+    id: uuidv4(),
+    players: room.players,
+    properties: [], // Will be initialized with actual properties
+    currentPlayerIndex: 0,
+    dice: [0, 0],
+    gamePhase: 'waiting',
+    winner: null,
+    actionLog: ['Game started']
+  };
 
-    // Need at least 2 players to start
-    if (room.players.length < 2) {
-      io.to(socket.id).emit('error', 'Need at least 2 players to start the game');
-      return;
-    }
+  // Update room
+  room.gameStarted = true;
+  room.gameState = gameState;
 
-    // Initialize game state
-    const gameState: GameState = {
-      id: uuidv4(),
-      players: room.players,
-      properties: [], // Will be initialized with actual properties
-      currentPlayerIndex: 0,
-      dice: [0, 0],
-      gamePhase: 'waiting',
-      winner: null,
-      actionLog: ['Game started']
-    };
+  // Save to Redis
+  await saveRoom(room);
+  await saveGameState(gameState);
 
-    // Update room
-    room.gameStarted = true;
-    room.gameState = gameState;
+  // Send SSE event
+  sendEvent('gameStarted', { gameState }, roomId);
 
-    // Broadcast game started
-    io.to(roomId).emit('gameStarted', gameState);
+  // Send updated rooms list
+  const rooms = await getAllRooms();
+  sendEvent('roomsList', { rooms });
 
-    // Broadcast updated rooms list
-    io.emit('roomsList', Array.from(rooms.values()));
-  });
+  res.json({ success: true, gameState });
+});
 
-  // Disconnect handler
-  socket.on('disconnect', () => {
-    const playerId = socket.data.playerId;
-    const roomId = socket.data.roomId;
+// Game action endpoints
+app.post('/api/rooms/:roomId/roll-dice', async (req, res) => {
+  const { roomId } = req.params;
+  const { clientId } = req.body;
 
-    if (roomId && rooms.has(roomId)) {
-      const room = rooms.get(roomId)!;
+  const room = await getRoom(roomId);
 
+  if (!room || !room.gameStarted || !room.gameState) {
+    return res.status(400).json({ error: 'Game not started' });
+  }
+
+  // Check if it's the player's turn
+  const currentPlayer = room.gameState.players[room.gameState.currentPlayerIndex];
+  if (currentPlayer.id !== clientId) {
+    return res.status(403).json({ error: 'Not your turn' });
+  }
+
+  // Roll dice
+  const dice: [number, number] = [
+    Math.floor(Math.random() * 6) + 1,
+    Math.floor(Math.random() * 6) + 1
+  ];
+
+  // Update game state
+  room.gameState.dice = dice;
+
+  // Move player
+  const oldPosition = currentPlayer.position;
+  const newPosition = (oldPosition + dice[0] + dice[1]) % 40;
+  currentPlayer.position = newPosition;
+
+  // Update action log
+  room.gameState.actionLog.push(`${currentPlayer.name} rolled ${dice[0]}+${dice[1]} and moved to position ${newPosition}`);
+
+  // Save to Redis
+  await saveRoom(room);
+  await saveGameState(room.gameState);
+
+  // Send SSE events
+  sendEvent('diceRolled', { playerId: currentPlayer.id, dice }, roomId);
+  sendEvent('playerMoved', { playerId: currentPlayer.id, position: newPosition }, roomId);
+  sendEvent('gameStateUpdated', { gameState: room.gameState }, roomId);
+
+  res.json({ success: true, dice, newPosition });
+});
+
+app.post('/api/rooms/:roomId/end-turn', async (req, res) => {
+  const { roomId } = req.params;
+  const { clientId } = req.body;
+
+  const room = await getRoom(roomId);
+
+  if (!room || !room.gameStarted || !room.gameState) {
+    return res.status(400).json({ error: 'Game not started' });
+  }
+
+  // Check if it's the player's turn
+  const currentPlayer = room.gameState.players[room.gameState.currentPlayerIndex];
+  if (currentPlayer.id !== clientId) {
+    return res.status(403).json({ error: 'Not your turn' });
+  }
+
+  // Move to next player
+  room.gameState.currentPlayerIndex = (room.gameState.currentPlayerIndex + 1) % room.gameState.players.length;
+  const nextPlayer = room.gameState.players[room.gameState.currentPlayerIndex];
+
+  // Update action log
+  room.gameState.actionLog.push(`${currentPlayer.name} ended their turn. ${nextPlayer.name}'s turn now.`);
+
+  // Save to Redis
+  await saveRoom(room);
+  await saveGameState(room.gameState);
+
+  // Send SSE events
+  sendEvent('turnEnded', { nextPlayerId: nextPlayer.id }, roomId);
+  sendEvent('gameStateUpdated', { gameState: room.gameState }, roomId);
+
+  res.json({ success: true, nextPlayerId: nextPlayer.id });
+});
+
+// Client disconnect handler
+app.delete('/api/clients/:clientId', async (req, res) => {
+  const { clientId } = req.params;
+
+  // Find rooms where the client is a player
+  const rooms = await getAllRooms();
+  for (const room of rooms) {
+    const playerIndex = room.players.findIndex(p => p.id === clientId);
+
+    if (playerIndex !== -1) {
       // Remove player from room
-      room.players = room.players.filter(p => p.id !== playerId);
+      room.players.splice(playerIndex, 1);
 
       if (room.players.length === 0) {
         // Delete empty room
-        rooms.delete(roomId);
-      } else if (room.host === playerId) {
+        await deleteRoom(room.id);
+      } else if (room.host === clientId) {
         // Assign new host
         room.host = room.players[0].id;
+        await saveRoom(room);
+      } else {
+        await saveRoom(room);
       }
 
-      // Broadcast player left
-      io.to(roomId).emit('roomLeft', playerId);
+      // Send SSE events
+      sendEvent('roomLeft', { playerId: clientId }, room.id);
 
-      // Broadcast updated rooms list
-      io.emit('roomsList', Array.from(rooms.values()));
+      // Delete player
+      await deletePlayer(clientId);
     }
+  }
 
-    // Remove player
-    if (playerId) {
-      players.delete(playerId);
-    }
+  // Send updated rooms list
+  const updatedRooms = await getAllRooms();
+  sendEvent('roomsList', { rooms: updatedRooms });
 
-    console.log(`Player disconnected: ${socket.id}`);
-  });
+  res.json({ success: true });
 });
 
 // Start server

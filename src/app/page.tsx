@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { initializeSocket, getSocket } from '@/lib/socket';
+import { initializeSSE, apiRequest, getClientId } from '@/lib/socket';
 
 export default function Home() {
   const router = useRouter();
@@ -12,27 +12,34 @@ export default function Home() {
   const [error, setError] = useState('');
 
   useEffect(() => {
-    // Initialize socket connection
-    const socket = initializeSocket();
+    // Initialize SSE connection
+    initializeSSE();
 
     return () => {
-      // Clean up socket listeners
+      // No need to clean up, will be handled by the module
     };
   }, []);
 
-  const handleCreateRoom = () => {
+  const handleCreateRoom = async () => {
     if (!playerName.trim()) {
       setError('Please enter your name');
       return;
     }
 
-    const socket = getSocket();
-    socket.emit('createRoom', playerName, (newRoomId) => {
-      router.push(`/game?roomId=${newRoomId}`);
-    });
+    try {
+      const clientId = getClientId();
+      const response = await apiRequest<{ roomId: string }>('/api/rooms', 'POST', {
+        playerName,
+        clientId
+      });
+
+      router.push(`/game?roomId=${response.roomId}`);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Failed to create room');
+    }
   };
 
-  const handleJoinRoom = () => {
+  const handleJoinRoom = async () => {
     if (!playerName.trim()) {
       setError('Please enter your name');
       return;
@@ -43,14 +50,17 @@ export default function Home() {
       return;
     }
 
-    const socket = getSocket();
-    socket.emit('joinRoom', roomId, playerName, (success, message) => {
-      if (success) {
-        router.push(`/game?roomId=${roomId}`);
-      } else {
-        setError(message || 'Failed to join room');
-      }
-    });
+    try {
+      const clientId = getClientId();
+      await apiRequest(`/api/rooms/${roomId}/join`, 'POST', {
+        playerName,
+        clientId
+      });
+
+      router.push(`/game?roomId=${roomId}`);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Failed to join room');
+    }
   };
 
   return (

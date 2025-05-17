@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { initializeSocket, getSocket } from '@/lib/socket';
+import { initializeSSE, apiRequest, getClientId, on, off } from '@/lib/socket';
 import { GameState, Player, Room } from '@/types/game';
 import GameBoard from '@/components/board/GameBoard';
 import PlayerInfo from '@/components/ui/PlayerInfo';
@@ -12,126 +12,163 @@ import GameLog from '@/components/ui/GameLog';
 export default function Game() {
   const searchParams = useSearchParams();
   const roomId = searchParams.get('roomId');
-  
+
   const [room, setRoom] = useState<Room | null>(null);
   const [gameState, setGameState] = useState<GameState | null>(null);
   const [currentPlayer, setCurrentPlayer] = useState<Player | null>(null);
   const [isHost, setIsHost] = useState(false);
-  
+
   useEffect(() => {
     if (!roomId) {
       return;
     }
-    
-    // Initialize socket
-    const socket = initializeSocket();
-    
-    // Set up event listeners
-    socket.on('roomJoined', (updatedRoom) => {
-      setRoom(updatedRoom);
-      
+
+    // Initialize SSE connection
+    const clientId = initializeSSE();
+
+    // Define event handlers
+    const handleRoomJoined = (data: { room: Room }) => {
+      setRoom(data.room);
+
       // Check if current player is host
-      const playerId = socket.id;
-      setIsHost(updatedRoom.host === playerId);
-      
+      setIsHost(data.room.host === clientId);
+
       // Find current player
-      const player = updatedRoom.players.find(p => p.id === playerId);
+      const player = data.room.players.find(p => p.id === clientId);
       if (player) {
         setCurrentPlayer(player);
       }
-    });
-    
-    socket.on('gameStarted', (initialGameState) => {
-      setGameState(initialGameState);
-      
+    };
+
+    const handleGameStarted = (data: { gameState: GameState }) => {
+      setGameState(data.gameState);
+
       // Find current player
-      const playerId = socket.id;
-      const player = initialGameState.players.find(p => p.id === playerId);
+      const player = data.gameState.players.find(p => p.id === clientId);
       if (player) {
         setCurrentPlayer(player);
       }
-    });
-    
-    socket.on('gameStateUpdated', (updatedGameState) => {
-      setGameState(updatedGameState);
-      
+    };
+
+    const handleGameStateUpdated = (data: { gameState: GameState }) => {
+      setGameState(data.gameState);
+
       // Find current player
-      const playerId = socket.id;
-      const player = updatedGameState.players.find(p => p.id === playerId);
+      const player = data.gameState.players.find(p => p.id === clientId);
       if (player) {
         setCurrentPlayer(player);
       }
-    });
-    
+    };
+
+    // Register event handlers
+    on('roomJoined', handleRoomJoined);
+    on('gameStarted', handleGameStarted);
+    on('gameStateUpdated', handleGameStateUpdated);
+
+    // Fetch initial room data
+    const fetchRoomData = async () => {
+      try {
+        const response = await apiRequest<{ room: Room }>(`/api/rooms/${roomId}`, 'GET');
+        handleRoomJoined(response);
+      } catch (error) {
+        console.error('Error fetching room data:', error);
+      }
+    };
+
+    fetchRoomData();
+
     // Clean up event listeners
     return () => {
-      socket.off('roomJoined');
-      socket.off('gameStarted');
-      socket.off('gameStateUpdated');
+      off('roomJoined', handleRoomJoined);
+      off('gameStarted', handleGameStarted);
+      off('gameStateUpdated', handleGameStateUpdated);
     };
   }, [roomId]);
-  
-  const handleStartGame = () => {
+
+  const handleStartGame = async () => {
     if (!roomId || !isHost) {
       return;
     }
-    
-    const socket = getSocket();
-    socket.emit('startGame', roomId);
+
+    try {
+      const clientId = getClientId();
+      await apiRequest(`/api/rooms/${roomId}/start`, 'POST', { clientId });
+    } catch (error) {
+      console.error('Error starting game:', error);
+    }
   };
-  
-  const handleAddAI = () => {
+
+  const handleAddAI = async () => {
     if (!roomId || !isHost) {
       return;
     }
-    
-    const socket = getSocket();
-    socket.emit('addAIPlayer', roomId);
+
+    try {
+      const clientId = getClientId();
+      await apiRequest(`/api/rooms/${roomId}/ai`, 'POST', { clientId });
+    } catch (error) {
+      console.error('Error adding AI player:', error);
+    }
   };
-  
-  const handleRollDice = () => {
+
+  const handleRollDice = async () => {
     if (!roomId || !gameState) {
       return;
     }
-    
-    const socket = getSocket();
-    socket.emit('rollDice', roomId);
+
+    try {
+      const clientId = getClientId();
+      await apiRequest(`/api/rooms/${roomId}/roll-dice`, 'POST', { clientId });
+    } catch (error) {
+      console.error('Error rolling dice:', error);
+    }
   };
-  
-  const handleBuyProperty = () => {
+
+  const handleBuyProperty = async () => {
     if (!roomId || !gameState || !currentPlayer) {
       return;
     }
-    
+
     // Find property at current position
     const property = gameState.properties.find(p => p.position === currentPlayer.position);
-    
+
     if (!property) {
       return;
     }
-    
-    const socket = getSocket();
-    socket.emit('buyProperty', roomId, property.id);
+
+    try {
+      const clientId = getClientId();
+      await apiRequest(`/api/rooms/${roomId}/buy-property`, 'POST', {
+        clientId,
+        propertyId: property.id
+      });
+    } catch (error) {
+      console.error('Error buying property:', error);
+    }
   };
-  
-  const handleEndTurn = () => {
+
+  const handleEndTurn = async () => {
     if (!roomId || !gameState) {
       return;
     }
-    
-    const socket = getSocket();
-    socket.emit('endTurn', roomId);
+
+    try {
+      const clientId = getClientId();
+      await apiRequest(`/api/rooms/${roomId}/end-turn`, 'POST', { clientId });
+    } catch (error) {
+      console.error('Error ending turn:', error);
+    }
   };
-  
+
   // Check if it's the current player's turn
   const isCurrentPlayerTurn = () => {
     if (!gameState || !currentPlayer) {
       return false;
     }
-    
+
     return gameState.players[gameState.currentPlayerIndex]?.id === currentPlayer.id;
   };
-  
+
   if (!roomId) {
     return (
       <div className="flex items-center justify-center min-h-screen bg-gradient-to-b from-blue-100 to-blue-200">
@@ -142,7 +179,7 @@ export default function Game() {
       </div>
     );
   }
-  
+
   if (!room) {
     return (
       <div className="flex items-center justify-center min-h-screen bg-gradient-to-b from-blue-100 to-blue-200">
@@ -153,7 +190,7 @@ export default function Game() {
       </div>
     );
   }
-  
+
   return (
     <div className="min-h-screen bg-gradient-to-b from-blue-100 to-blue-200 p-4">
       <div className="max-w-7xl mx-auto">
@@ -162,7 +199,7 @@ export default function Game() {
             <h1 className="text-3xl font-bold text-blue-800 mb-6">Game Lobby</h1>
             <h2 className="text-xl font-semibold text-gray-700 mb-2">Room ID: {room.id}</h2>
             <p className="text-gray-600 mb-6">Share this ID with friends to join your game</p>
-            
+
             <div className="mb-6">
               <h3 className="text-lg font-semibold text-gray-700 mb-2">Players:</h3>
               <ul className="space-y-2">
@@ -175,7 +212,7 @@ export default function Game() {
                 ))}
               </ul>
             </div>
-            
+
             <div className="flex space-x-4">
               {isHost && (
                 <>
@@ -190,7 +227,7 @@ export default function Game() {
                   >
                     Start Game
                   </button>
-                  
+
                   <button
                     onClick={handleAddAI}
                     disabled={room.players.length >= 8}
@@ -205,7 +242,7 @@ export default function Game() {
                 </>
               )}
             </div>
-            
+
             {isHost && room.players.length < 2 && (
               <p className="mt-4 text-sm text-red-600">
                 You need at least 2 players to start the game.
@@ -217,22 +254,22 @@ export default function Game() {
             <div className="lg:col-span-2">
               <GameBoard gameState={gameState} />
             </div>
-            
+
             <div className="space-y-6">
-              <PlayerInfo 
-                players={gameState?.players || []} 
-                currentPlayerId={currentPlayer?.id || ''} 
+              <PlayerInfo
+                players={gameState?.players || []}
+                currentPlayerId={currentPlayer?.id || ''}
                 currentPlayerIndex={gameState?.currentPlayerIndex || 0}
               />
-              
-              <ActionPanel 
+
+              <ActionPanel
                 gameState={gameState}
                 isCurrentTurn={isCurrentPlayerTurn()}
                 onRollDice={handleRollDice}
                 onBuyProperty={handleBuyProperty}
                 onEndTurn={handleEndTurn}
               />
-              
+
               <GameLog actionLog={gameState?.actionLog || []} />
             </div>
           </div>
