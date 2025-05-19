@@ -9,16 +9,38 @@ interface GameLogProps {
 export default function GameLog({ actionLog }: GameLogProps) {
   const logEndRef = useRef<HTMLDivElement>(null);
 
-  // Auto-scroll to bottom when log updates
+  // Auto-scroll functionality is disabled
+  // If you want to manually scroll to the bottom, uncomment the useEffect below
+  /*
   useEffect(() => {
     if (logEndRef.current) {
       logEndRef.current.scrollIntoView({ behavior: 'smooth' });
     }
   }, [actionLog]);
+  */
+
+  // Function to manually scroll to the bottom
+  const scrollToBottom = () => {
+    if (logEndRef.current) {
+      logEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  };
 
   return (
     <div className="bg-white p-4 rounded-lg shadow-lg">
-      <h2 className="text-xl font-bold text-blue-800 mb-4">Game Log</h2>
+      <div className="flex justify-between items-center mb-4">
+        <h2 className="text-xl font-bold text-blue-800">Game Log</h2>
+
+        {/* Only show scroll button if there are log entries */}
+        {actionLog.length > 0 && (
+          <button
+            onClick={scrollToBottom}
+            className="text-sm bg-blue-100 hover:bg-blue-200 text-blue-800 px-2 py-1 rounded transition-colors"
+          >
+            Latest
+          </button>
+        )}
+      </div>
 
       <div className="h-40 overflow-y-auto bg-gray-50 p-3 rounded-lg">
         {actionLog.length === 0 ? (
