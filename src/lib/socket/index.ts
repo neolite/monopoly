@@ -18,7 +18,7 @@ export const initializeSSE = (): string => {
   }
 
   if (!eventSource) {
-    const sseUrl = `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'}/events?clientId=${clientId}`;
+    const sseUrl = `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3002'}/events?clientId=${clientId}`;
     eventSource = new EventSource(sseUrl);
 
     eventSource.onopen = () => {
@@ -30,12 +30,20 @@ export const initializeSSE = (): string => {
     };
 
     eventSource.onmessage = (event) => {
+      console.log('SSE message received:', event.data);
       try {
         const data = JSON.parse(event.data);
         const { type, payload } = data;
+        console.log(`Parsed SSE event: type=${type}`, payload);
 
         if (eventHandlers[type]) {
-          eventHandlers[type].forEach(handler => handler(payload));
+          console.log(`Found ${eventHandlers[type].length} handlers for event type: ${type}`);
+          eventHandlers[type].forEach(handler => {
+            console.log(`Calling handler for ${type}`);
+            handler(payload);
+          });
+        } else {
+          console.warn(`No handlers registered for event type: ${type}`);
         }
       } catch (error) {
         console.error('Error parsing SSE message:', error);
@@ -95,7 +103,7 @@ export const apiRequest = async <T>(
   method: 'GET' | 'POST' | 'DELETE' = 'POST',
   data?: any
 ): Promise<T> => {
-  const url = `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'}${endpoint}`;
+  const url = `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3002'}${endpoint}`;
 
   const options: RequestInit = {
     method,

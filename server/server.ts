@@ -1,32 +1,18 @@
-import express from 'express';
+import express, { Request, Response } from 'express';
 import { createServer } from 'http';
 import cors from 'cors';
 import { v4 as uuidv4 } from 'uuid';
+import Redis from 'ioredis';
 import {
   GameState,
   Player,
   Room,
   PlayerToken
 } from '../src/types/game';
-import {
-  saveRoom,
-  getRoom,
-  deleteRoom,
-  getAllRooms,
-  savePlayer,
-  getPlayer,
-  deletePlayer,
-  saveGameState,
-  getGameState
-} from '../src/lib/redis';
 
 // Type definitions for request parameters
 interface RoomIdParam {
   roomId: string;
-}
-
-interface ClientIdParam {
-  clientId: string;
 }
 
 interface CreateRoomBody {
@@ -34,17 +20,13 @@ interface CreateRoomBody {
   clientId: string;
 }
 
-interface JoinRoomBody {
-  playerName: string;
-  clientId: string;
-}
+interface JoinRoomBody extends CreateRoomBody {}
 
 interface ClientIdBody {
   clientId: string;
 }
 
-interface BuyPropertyBody {
-  clientId: string;
+interface BuyPropertyBody extends ClientIdBody {
   propertyId: number;
 }
 
@@ -56,6 +38,73 @@ app.use(express.json());
 // Create HTTP server
 const httpServer = createServer(app);
 
+// Initialize Redis client
+const redisClient = new Redis(process.env.REDIS_URL || 'redis://localhost:6379');
+
+// Redis key prefixes
+const ROOM_PREFIX = 'room:';
+const PLAYER_PREFIX = 'player:';
+const GAME_STATE_PREFIX = 'gamestate:';
+
+// Helper function to generate Redis keys
+const getRoomKey = (roomId: string) => `${ROOM_PREFIX}${roomId}`;
+const getPlayerKey = (playerId: string) => `${PLAYER_PREFIX}${playerId}`;
+const getGameStateKey = (gameId: string) => `${GAME_STATE_PREFIX}${gameId}`;
+
+// Room operations
+const saveRoom = async (room: Room): Promise<void> => {
+  await redisClient.set(getRoomKey(room.id), JSON.stringify(room));
+
+  // Add to rooms list
+  await redisClient.sadd('rooms', room.id);
+};
+
+const getRoom = async (roomId: string): Promise<Room | null> => {
+  const roomData = await redisClient.get(getRoomKey(roomId));
+  return roomData ? JSON.parse(roomData) : null;
+};
+
+const deleteRoom = async (roomId: string): Promise<void> => {
+  await redisClient.del(getRoomKey(roomId));
+  await redisClient.srem('rooms', roomId);
+};
+
+const getAllRooms = async (): Promise<Room[]> => {
+  const roomIds = await redisClient.smembers('rooms');
+  if (roomIds.length === 0) return [];
+
+  const roomKeys = roomIds.map(id => getRoomKey(id));
+  const roomsData = await redisClient.mget(...roomKeys);
+
+  return roomsData
+    .filter((data): data is string => data !== null)
+    .map(data => JSON.parse(data));
+};
+
+// Player operations
+const savePlayer = async (player: Player): Promise<void> => {
+  await redisClient.set(getPlayerKey(player.id), JSON.stringify(player));
+};
+
+const getPlayer = async (playerId: string): Promise<Player | null> => {
+  const playerData = await redisClient.get(getPlayerKey(playerId));
+  return playerData ? JSON.parse(playerData) : null;
+};
+
+const deletePlayer = async (playerId: string): Promise<void> => {
+  await redisClient.del(getPlayerKey(playerId));
+};
+
+// Game state operations
+const saveGameState = async (gameState: GameState): Promise<void> => {
+  await redisClient.set(getGameStateKey(gameState.id), JSON.stringify(gameState));
+};
+
+const getGameState = async (gameId: string): Promise<GameState | null> => {
+  const gameStateData = await redisClient.get(getGameStateKey(gameId));
+  return gameStateData ? JSON.parse(gameStateData) : null;
+};
+
 // Connected SSE clients
 const clients = new Map<string, express.Response>();
 
@@ -65,7 +114,7 @@ const availableTokens: PlayerToken[] = [
 ];
 
 // SSE endpoint
-app.get('/events', (req, res) => {
+app.get('/events', (req: Request, res: Response) => {
   // Set SSE headers
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -99,7 +148,7 @@ const sendEvent = (type: string, payload: any, roomId?: string) => {
 };
 
 // API endpoints
-app.get('/api/rooms/:roomId', async (req, res) => {
+app.get('/api/rooms/:roomId', async (req: Request<RoomIdParam>, res: Response) => {
   const { roomId } = req.params;
 
   const room = await getRoom(roomId);
@@ -111,7 +160,7 @@ app.get('/api/rooms/:roomId', async (req, res) => {
   res.json({ room });
 });
 
-app.post('/api/rooms', async (req, res) => {
+app.post('/api/rooms', async (req: Request<{}, {}, CreateRoomBody>, res: Response) => {
   const { playerName, clientId } = req.body;
 
   if (!playerName || !clientId) {
@@ -159,7 +208,7 @@ app.post('/api/rooms', async (req, res) => {
   res.json({ roomId });
 });
 
-app.post('/api/rooms/:roomId/join', async (req, res) => {
+app.post('/api/rooms/:roomId/join', async (req: Request<RoomIdParam, {}, JoinRoomBody>, res: Response) => {
   const { roomId } = req.params;
   const { playerName, clientId } = req.body;
 
@@ -218,7 +267,7 @@ app.post('/api/rooms/:roomId/join', async (req, res) => {
   res.json({ success: true, room });
 });
 
-app.post('/api/rooms/:roomId/ai', async (req, res) => {
+app.post('/api/rooms/:roomId/ai', async (req: Request<RoomIdParam, {}, ClientIdBody>, res: Response) => {
   const { roomId } = req.params;
   const { clientId } = req.body;
 
@@ -270,8 +319,7 @@ app.post('/api/rooms/:roomId/ai', async (req, res) => {
   res.json({ success: true, room });
 });
 
-// Start game endpoint
-app.post('/api/rooms/:roomId/start', async (req, res) => {
+app.post('/api/rooms/:roomId/start', async (req: Request<RoomIdParam, {}, ClientIdBody>, res: Response) => {
   const { roomId } = req.params;
   const { clientId } = req.body;
 
@@ -326,7 +374,7 @@ app.post('/api/rooms/:roomId/start', async (req, res) => {
 });
 
 // Game action endpoints
-app.post('/api/rooms/:roomId/roll-dice', async (req, res) => {
+app.post('/api/rooms/:roomId/roll-dice', async (req: Request<RoomIdParam, {}, ClientIdBody>, res: Response) => {
   const { roomId } = req.params;
   const { clientId } = req.body;
 
@@ -371,7 +419,7 @@ app.post('/api/rooms/:roomId/roll-dice', async (req, res) => {
   res.json({ success: true, dice, newPosition });
 });
 
-app.post('/api/rooms/:roomId/end-turn', async (req, res) => {
+app.post('/api/rooms/:roomId/end-turn', async (req: Request<RoomIdParam, {}, ClientIdBody>, res: Response) => {
   const { roomId } = req.params;
   const { clientId } = req.body;
 
@@ -406,7 +454,7 @@ app.post('/api/rooms/:roomId/end-turn', async (req, res) => {
 });
 
 // Client disconnect handler
-app.delete('/api/clients/:clientId', async (req, res) => {
+app.delete('/api/clients/:clientId', async (req: Request<{ clientId: string }>, res: Response) => {
   const { clientId } = req.params;
 
   // Find rooms where the client is a player
@@ -447,5 +495,5 @@ app.delete('/api/clients/:clientId', async (req, res) => {
 // Start server
 const PORT = process.env.PORT || 3001;
 httpServer.listen(PORT, () => {
-  console.log(`Socket.IO server running on port ${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });

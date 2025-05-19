@@ -28,6 +28,7 @@ export default function Game() {
 
     // Define event handlers
     const handleRoomJoined = (data: { room: Room }) => {
+      console.log('Room joined event received:', data);
       setRoom(data.room);
 
       // Check if current player is host
@@ -40,13 +41,59 @@ export default function Game() {
       }
     };
 
-    const handleGameStarted = (data: { gameState: GameState }) => {
+    // Handle room updates (including game started status)
+    const handleRoomUpdated = (data: { room: Room }) => {
+      console.log('Room updated event received:', data);
+      setRoom(data.room);
+
+      // If the game has started, also update the game state
+      if (data.room.gameStarted && data.room.gameState) {
+        console.log('Game has started, updating game state:', data.room.gameState);
+        setGameState(data.room.gameState);
+
+        // Find current player
+        const player = data.room.gameState.players.find(p => p.id === clientId);
+        if (player) {
+          setCurrentPlayer(player);
+        }
+      }
+    };
+
+    const handleGameStarted = (data: { gameState: GameState, room?: { id: string } }) => {
+      console.log('Game started event received:', data);
+
+      // Update game state
       setGameState(data.gameState);
+
+      // Update room state to reflect that the game has started
+      if (room) {
+        const updatedRoom = { ...room, gameStarted: true, gameState: data.gameState };
+        console.log('Updating room with game started:', updatedRoom);
+        setRoom(updatedRoom);
+      } else {
+        console.warn('Room state is null when handling gameStarted event');
+
+        // If room is null, we need to fetch it
+        if (data.room?.id) {
+          console.log('Fetching room data from gameStarted event');
+          apiRequest<{ room: Room }>(`/api/rooms/${data.room.id}`, 'GET')
+            .then(response => {
+              console.log('Received room data after gameStarted event:', response);
+              setRoom(response.room);
+            })
+            .catch(error => {
+              console.error('Error fetching room data after gameStarted event:', error);
+            });
+        }
+      }
 
       // Find current player
       const player = data.gameState.players.find(p => p.id === clientId);
       if (player) {
+        console.log('Found current player in game state:', player);
         setCurrentPlayer(player);
+      } else {
+        console.warn('Current player not found in game state');
       }
     };
 
@@ -60,16 +107,45 @@ export default function Game() {
       }
     };
 
+    const handlePlayerMoved = (data: { playerId: string, position: number }) => {
+      console.log('Player moved event received:', data);
+      // This event is handled by the gameStateUpdated event, but we need to register a handler
+      // to prevent the "No handlers registered for event type: playerMoved" error
+    };
+
     // Register event handlers
+    console.log('Registering event handlers');
     on('roomJoined', handleRoomJoined);
+    on('roomUpdated', handleRoomUpdated);
     on('gameStarted', handleGameStarted);
     on('gameStateUpdated', handleGameStateUpdated);
+    on('playerMoved', handlePlayerMoved);
+    console.log('Event handlers registered');
 
     // Fetch initial room data
     const fetchRoomData = async () => {
       try {
+        console.log('Fetching initial room data for roomId:', roomId);
         const response = await apiRequest<{ room: Room }>(`/api/rooms/${roomId}`, 'GET');
-        handleRoomJoined(response);
+        console.log('Received room data:', response);
+
+        // Update room state
+        setRoom(response.room);
+
+        // Check if current player is host
+        setIsHost(response.room.host === clientId);
+
+        // Find current player
+        const player = response.room.players.find(p => p.id === clientId);
+        if (player) {
+          setCurrentPlayer(player);
+        }
+
+        // If game has already started, update game state
+        if (response.room.gameStarted && response.room.gameState) {
+          console.log('Game already started, updating game state:', response.room.gameState);
+          setGameState(response.room.gameState);
+        }
       } catch (error) {
         console.error('Error fetching room data:', error);
       }
@@ -80,19 +156,26 @@ export default function Game() {
     // Clean up event listeners
     return () => {
       off('roomJoined', handleRoomJoined);
+      off('roomUpdated', handleRoomUpdated);
       off('gameStarted', handleGameStarted);
       off('gameStateUpdated', handleGameStateUpdated);
+      off('playerMoved', handlePlayerMoved);
     };
   }, [roomId]);
 
   const handleStartGame = async () => {
     if (!roomId || !isHost) {
+      console.log('Cannot start game: not host or no roomId');
       return;
     }
 
     try {
+      console.log('Starting game for room:', roomId);
       const clientId = getClientId();
-      await apiRequest(`/api/rooms/${roomId}/start`, 'POST', { clientId });
+      console.log('Using clientId:', clientId);
+      console.log('Sending start game request');
+      const response = await apiRequest(`/api/rooms/${roomId}/start`, 'POST', { clientId });
+      console.log('Start game response:', response);
     } catch (error) {
       console.error('Error starting game:', error);
     }
@@ -160,6 +243,30 @@ export default function Game() {
     }
   };
 
+  // Function to manually trigger AI turn (for host only)
+  const handleTriggerAITurn = async () => {
+    if (!roomId || !gameState || !isHost) {
+      return;
+    }
+
+    // Get current player
+    const currentPlayer = gameState.players[gameState.currentPlayerIndex];
+
+    // Make sure it's an AI player
+    if (!currentPlayer || !currentPlayer.isAI) {
+      console.log('Current player is not AI, cannot trigger AI turn');
+      return;
+    }
+
+    try {
+      console.log(`Manually triggering AI turn for ${currentPlayer.name}`);
+      const clientId = getClientId();
+      await apiRequest(`/api/rooms/${roomId}/ai-turn`, 'POST', { clientId });
+    } catch (error) {
+      console.error('Error triggering AI turn:', error);
+    }
+  };
+
   // Check if it's the current player's turn
   const isCurrentPlayerTurn = () => {
     if (!gameState || !currentPlayer) {
@@ -191,6 +298,40 @@ export default function Game() {
     );
   }
 
+  console.log('Rendering game component with state:', {
+    roomId,
+    room,
+    gameState,
+    currentPlayer,
+    isHost,
+    gameStarted: room?.gameStarted
+  });
+
+  // Debug player IDs to help identify duplicates
+  if (room?.players) {
+    console.log('Player IDs in room:', room.players.map(p => ({ id: p.id, name: p.name })));
+
+    // Check for duplicate IDs
+    const playerIds = room.players.map(p => p.id);
+    const uniqueIds = new Set(playerIds);
+    if (playerIds.length !== uniqueIds.size) {
+      console.error('DUPLICATE PLAYER IDs DETECTED!', playerIds);
+
+      // Find the duplicates
+      const counts = {};
+      const duplicates = [];
+      playerIds.forEach(id => {
+        counts[id] = (counts[id] || 0) + 1;
+        if (counts[id] > 1 && !duplicates.includes(id)) {
+          duplicates.push(id);
+        }
+      });
+
+      console.error('Duplicate IDs:', duplicates);
+      console.error('Players with duplicate IDs:', room.players.filter(p => duplicates.includes(p.id)));
+    }
+  }
+
   return (
     <div className="min-h-screen bg-gradient-to-b from-blue-100 to-blue-200 p-4">
       <div className="max-w-7xl mx-auto">
@@ -206,7 +347,10 @@ export default function Game() {
                 {room.players.map((player) => (
                   <li key={player.id} className="flex items-center">
                     <div className={`w-4 h-4 rounded-full mr-2 ${player.isAI ? 'bg-red-500' : 'bg-green-500'}`}></div>
-                    <span className="text-gray-700">{player.name} {player.id === room.host && '(Host)'}</span>
+                    <span className="text-gray-700">
+                      {player.name}
+                      {player.id === room.host ? ' (Host)' : ''}
+                    </span>
                     {player.isAI && <span className="ml-2 text-xs bg-gray-200 px-2 py-1 rounded">AI</span>}
                   </li>
                 ))}
@@ -238,6 +382,33 @@ export default function Game() {
                     }`}
                   >
                     Add AI Player
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      // Debug function to manually update the room state
+                      console.log('Debug: Manually updating room state');
+                      if (room) {
+                        const debugGameState = {
+                          id: 'debug-game-state',
+                          players: room.players,
+                          properties: [],
+                          currentPlayerIndex: 0,
+                          dice: [0, 0],
+                          gamePhase: 'waiting',
+                          winner: null,
+                          actionLog: ['Debug game started']
+                        };
+                        const updatedRoom = { ...room, gameStarted: true, gameState: debugGameState };
+                        console.log('Debug: Setting room to:', updatedRoom);
+                        setRoom(updatedRoom);
+                        console.log('Debug: Setting game state to:', debugGameState);
+                        setGameState(debugGameState);
+                      }
+                    }}
+                    className="px-4 py-2 rounded font-semibold bg-purple-600 text-white hover:bg-purple-700"
+                  >
+                    Debug: Force Start
                   </button>
                 </>
               )}
@@ -271,6 +442,22 @@ export default function Game() {
               />
 
               <GameLog actionLog={gameState?.actionLog || []} />
+
+              {/* Add a button for host to manually trigger AI turn if needed */}
+              {isHost && gameState && gameState.players[gameState.currentPlayerIndex]?.isAI && (
+                <div className="bg-white p-4 rounded-lg shadow-lg">
+                  <h3 className="text-lg font-semibold text-red-800 mb-2">Host Controls</h3>
+                  <p className="text-sm text-gray-600 mb-2">
+                    If the AI player's turn is stuck, you can manually trigger it:
+                  </p>
+                  <button
+                    onClick={handleTriggerAITurn}
+                    className="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline transition duration-300"
+                  >
+                    Force AI Turn
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         )}
