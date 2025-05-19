@@ -106,6 +106,72 @@ app.get('/events', (req, res) => {
   });
 });
 
+// Helper function to calculate rent for a property
+const calculateRent = (gameState, property) => {
+  if (!property.owner) {
+    return 0;
+  }
+
+  // Get owner
+  const owner = gameState.players.find(p => p.id === property.owner);
+
+  if (!owner) {
+    return 0;
+  }
+
+  // Check if mortgaged
+  if (property.mortgaged) {
+    return 0;
+  }
+
+  // Handle different property types
+  switch (property.group) {
+    case 'railroad':
+      // Count railroads owned by player
+      const railroadsOwned = gameState.properties.filter(
+        p => p.group === 'railroad' && p.owner === owner.id
+      ).length;
+      return property.rent[railroadsOwned - 1];
+
+    case 'utility':
+      // Count utilities owned by player
+      const utilitiesOwned = gameState.properties.filter(
+        p => p.group === 'utility' && p.owner === owner.id
+      ).length;
+
+      // Rent is based on dice roll
+      const diceSum = gameState.dice[0] + gameState.dice[1];
+      return property.rent[utilitiesOwned - 1] * diceSum;
+
+    default:
+      // Regular property
+      // Check if player owns all properties in the group
+      const propertiesInGroup = gameState.properties.filter(
+        p => p.group === property.group
+      );
+
+      const ownsAllInGroup = propertiesInGroup.every(
+        p => p.owner === owner.id
+      );
+
+      // If no houses and owns all in group, rent is doubled
+      if (property.houses === 0 && ownsAllInGroup) {
+        return property.rent[0] * 2;
+      }
+
+      // Otherwise, rent is based on number of houses
+      return property.rent[property.houses];
+  }
+};
+
+// Helper function to get special space at a position
+const getSpecialSpace = (position) => {
+  // Import special spaces from the board module
+  const { specialSpaces } = require('../src/lib/game/board');
+
+  return specialSpaces.find(s => s.position === position);
+};
+
 // Helper function to send SSE event to all clients or specific room
 const sendEvent = (type, payload, roomId) => {
   console.log(`Sending SSE event: ${type}`, roomId ? `to room ${roomId}` : 'to all clients');
@@ -422,10 +488,17 @@ app.post('/api/rooms/:roomId/start', async (req, res) => {
     await saveRoom(room);
   }
 
+  // Import properties from the board module
+  const { properties } = require('../src/lib/game/board');
+
+  // Create a deep copy of the properties to avoid reference issues
+  const initialProperties = JSON.parse(JSON.stringify(properties));
+  console.log(`Initialized ${initialProperties.length} properties for the game`);
+
   const gameState = {
     id: uuidv4(),
     players: room.players,
-    properties: [], // Will be initialized with actual properties
+    properties: initialProperties,
     currentPlayerIndex: 0,
     dice: [0, 0],
     gamePhase: 'waiting',
@@ -512,15 +585,99 @@ app.post('/api/rooms/:roomId/roll-dice', async (req, res) => {
   console.log(`Player moved from ${oldPosition} to ${newPosition}`);
 
   // Check if player landed on a property
-  // This is a placeholder - you'll need to implement the actual property logic
   let propertyMessage = '';
   const property = room.gameState.properties.find(p => p.position === newPosition);
+
   if (property) {
     propertyMessage = ` and landed on ${property.name}`;
     console.log(`Player landed on property: ${property.name}`);
+
+    // Check if property is owned by another player
+    if (property.owner && property.owner !== currentPlayer.id) {
+      // Find owner
+      const owner = room.gameState.players.find(p => p.id === property.owner);
+
+      if (owner) {
+        // Calculate rent
+        const rentAmount = calculateRent(room.gameState, property);
+        console.log(`Player needs to pay $${rentAmount} rent to ${owner.name}`);
+
+        // Pay rent
+        currentPlayer.money -= rentAmount;
+        owner.money += rentAmount;
+
+        // Update action log
+        room.gameState.actionLog.push(`${currentPlayer.name} paid $${rentAmount} rent to ${owner.name} for ${property.name}`);
+
+        // Check for bankruptcy
+        if (currentPlayer.money < 0) {
+          console.log(`Player ${currentPlayer.name} is bankrupt`);
+          currentPlayer.bankrupt = true;
+          room.gameState.actionLog.push(`${currentPlayer.name} went bankrupt!`);
+
+          // Check if game is over (only one player left)
+          const activePlayers = room.gameState.players.filter(p => !p.bankrupt);
+          if (activePlayers.length === 1) {
+            room.gameState.winner = activePlayers[0].id;
+            room.gameState.gamePhase = 'game-over';
+            room.gameState.actionLog.push(`${activePlayers[0].name} wins the game!`);
+          }
+        }
+
+        // Set game phase to end-turn
+        room.gameState.gamePhase = 'end-turn';
+      }
+    } else if (!property.owner) {
+      // Property is not owned, set game phase to property-decision
+      room.gameState.gamePhase = 'property-decision';
+    } else {
+      // Property is owned by current player, set game phase to end-turn
+      room.gameState.gamePhase = 'end-turn';
+    }
+  } else {
+    // Check if player landed on a special space
+    const specialSpace = getSpecialSpace(newPosition);
+    if (specialSpace) {
+      propertyMessage = ` and landed on ${specialSpace.name}`;
+      console.log(`Player landed on special space: ${specialSpace.name}`);
+
+      // Handle special spaces
+      if (specialSpace.type === 'tax') {
+        // Pay tax
+        const taxAmount = specialSpace.amount || 0;
+        currentPlayer.money -= taxAmount;
+        room.gameState.actionLog.push(`${currentPlayer.name} paid $${taxAmount} in taxes`);
+
+        // Check for bankruptcy
+        if (currentPlayer.money < 0) {
+          console.log(`Player ${currentPlayer.name} is bankrupt`);
+          currentPlayer.bankrupt = true;
+          room.gameState.actionLog.push(`${currentPlayer.name} went bankrupt!`);
+
+          // Check if game is over (only one player left)
+          const activePlayers = room.gameState.players.filter(p => !p.bankrupt);
+          if (activePlayers.length === 1) {
+            room.gameState.winner = activePlayers[0].id;
+            room.gameState.gamePhase = 'game-over';
+            room.gameState.actionLog.push(`${activePlayers[0].name} wins the game!`);
+          }
+        }
+      } else if (specialSpace.type === 'go-to-jail') {
+        // Go to jail
+        currentPlayer.position = 10; // Jail position
+        currentPlayer.inJail = true;
+        room.gameState.actionLog.push(`${currentPlayer.name} was sent to Jail`);
+      }
+
+      // Set game phase to end-turn
+      room.gameState.gamePhase = 'end-turn';
+    } else {
+      // Not a property or special space, set game phase to end-turn
+      room.gameState.gamePhase = 'end-turn';
+    }
   }
 
-  // Update action log
+  // Update action log for the dice roll and movement
   room.gameState.actionLog.push(`${currentPlayer.name} rolled ${dice[0]}+${dice[1]} and moved to position ${newPosition}${propertyMessage}`);
 
   // Save to Redis
@@ -606,6 +763,79 @@ app.post('/api/rooms/:roomId/end-turn', async (req, res) => {
   res.json({ success: true, nextPlayerId: nextPlayer.id });
 });
 
+// Buy property endpoint
+app.post('/api/rooms/:roomId/buy-property', async (req, res) => {
+  const { roomId } = req.params;
+  const { clientId, propertyId } = req.body;
+  console.log(`Buy property request from ${clientId} for property ${propertyId} in room ${roomId}`);
+
+  const room = await getRoom(roomId);
+
+  if (!room || !room.gameStarted || !room.gameState) {
+    console.log('Game not started');
+    return res.status(400).json({ error: 'Game not started' });
+  }
+
+  // Check if it's the player's turn
+  const currentPlayer = room.gameState.players[room.gameState.currentPlayerIndex];
+  if (currentPlayer.id !== clientId) {
+    console.log(`Not ${clientId}'s turn. Current player is ${currentPlayer.id}`);
+    return res.status(403).json({ error: 'Not your turn' });
+  }
+
+  // Find the property
+  const property = room.gameState.properties.find(p => p.id === propertyId);
+  if (!property) {
+    console.log(`Property ${propertyId} not found`);
+    return res.status(404).json({ error: 'Property not found' });
+  }
+
+  // Check if property is available
+  if (property.owner !== null) {
+    console.log(`Property ${property.name} already owned by ${property.owner}`);
+    return res.status(400).json({ error: 'Property already owned' });
+  }
+
+  // Check if player has enough money
+  if (currentPlayer.money < property.price) {
+    console.log(`Player ${currentPlayer.name} doesn't have enough money to buy ${property.name}`);
+    return res.status(400).json({ error: 'Not enough money' });
+  }
+
+  // Buy property
+  console.log(`Player ${currentPlayer.name} is buying ${property.name} for $${property.price}`);
+  currentPlayer.money -= property.price;
+  property.owner = currentPlayer.id;
+
+  // Add property to player's properties array
+  if (!currentPlayer.properties) {
+    currentPlayer.properties = [];
+  }
+  currentPlayer.properties.push(property);
+
+  // Update action log
+  room.gameState.actionLog.push(`${currentPlayer.name} bought ${property.name} for $${property.price}`);
+  room.gameState.gamePhase = 'end-turn';
+
+  // Save to Redis
+  await saveRoom(room);
+  await saveGameState(room.gameState);
+
+  // Send SSE events
+  console.log('Sending propertyPurchased event');
+  sendEvent('propertyPurchased', {
+    playerId: currentPlayer.id,
+    propertyId: property.id,
+    propertyName: property.name,
+    price: property.price
+  }, roomId);
+
+  console.log('Sending gameStateUpdated event');
+  sendEvent('gameStateUpdated', { gameState: room.gameState }, roomId);
+
+  res.json({ success: true, property });
+});
+
 // AI turn handling
 const handleAITurn = async (roomId) => {
   try {
@@ -655,12 +885,102 @@ const handleAITurn = async (roomId) => {
     // Check if player landed on a property
     let propertyMessage = '';
     const property = room.gameState.properties.find(p => p.position === newPosition);
+
     if (property) {
       propertyMessage = ` and landed on ${property.name}`;
       console.log(`[AI TURN] AI landed on property: ${property.name}`);
+
+      // Check if property is owned by another player
+      if (property.owner && property.owner !== currentPlayer.id) {
+        // Find owner
+        const owner = room.gameState.players.find(p => p.id === property.owner);
+
+        if (owner) {
+          // Calculate rent
+          const rentAmount = calculateRent(room.gameState, property);
+          console.log(`[AI TURN] AI needs to pay $${rentAmount} rent to ${owner.name}`);
+
+          // Pay rent
+          currentPlayer.money -= rentAmount;
+          owner.money += rentAmount;
+
+          // Update action log
+          room.gameState.actionLog.push(`${currentPlayer.name} paid $${rentAmount} rent to ${owner.name} for ${property.name}`);
+
+          // Check for bankruptcy
+          if (currentPlayer.money < 0) {
+            console.log(`[AI TURN] AI player ${currentPlayer.name} is bankrupt`);
+            currentPlayer.bankrupt = true;
+            room.gameState.actionLog.push(`${currentPlayer.name} went bankrupt!`);
+
+            // Check if game is over (only one player left)
+            const activePlayers = room.gameState.players.filter(p => !p.bankrupt);
+            if (activePlayers.length === 1) {
+              room.gameState.winner = activePlayers[0].id;
+              room.gameState.gamePhase = 'game-over';
+              room.gameState.actionLog.push(`${activePlayers[0].name} wins the game!`);
+            }
+          }
+        }
+      } else if (!property.owner) {
+        // Property is not owned, AI should buy it if it has enough money
+        if (currentPlayer.money >= property.price) {
+          // Buy property
+          console.log(`[AI TURN] AI is buying ${property.name} for $${property.price}`);
+          currentPlayer.money -= property.price;
+          property.owner = currentPlayer.id;
+
+          // Add property to AI's properties array
+          if (!currentPlayer.properties) {
+            currentPlayer.properties = [];
+          }
+          currentPlayer.properties.push(property);
+
+          // Update action log
+          room.gameState.actionLog.push(`${currentPlayer.name} bought ${property.name} for $${property.price}`);
+        } else {
+          console.log(`[AI TURN] AI can't afford ${property.name}`);
+          room.gameState.actionLog.push(`${currentPlayer.name} can't afford ${property.name}`);
+        }
+      }
+    } else {
+      // Check if player landed on a special space
+      const specialSpace = getSpecialSpace(newPosition);
+      if (specialSpace) {
+        propertyMessage = ` and landed on ${specialSpace.name}`;
+        console.log(`[AI TURN] AI landed on special space: ${specialSpace.name}`);
+
+        // Handle special spaces
+        if (specialSpace.type === 'tax') {
+          // Pay tax
+          const taxAmount = specialSpace.amount || 0;
+          currentPlayer.money -= taxAmount;
+          room.gameState.actionLog.push(`${currentPlayer.name} paid $${taxAmount} in taxes`);
+
+          // Check for bankruptcy
+          if (currentPlayer.money < 0) {
+            console.log(`[AI TURN] AI player ${currentPlayer.name} is bankrupt`);
+            currentPlayer.bankrupt = true;
+            room.gameState.actionLog.push(`${currentPlayer.name} went bankrupt!`);
+
+            // Check if game is over (only one player left)
+            const activePlayers = room.gameState.players.filter(p => !p.bankrupt);
+            if (activePlayers.length === 1) {
+              room.gameState.winner = activePlayers[0].id;
+              room.gameState.gamePhase = 'game-over';
+              room.gameState.actionLog.push(`${activePlayers[0].name} wins the game!`);
+            }
+          }
+        } else if (specialSpace.type === 'go-to-jail') {
+          // Go to jail
+          currentPlayer.position = 10; // Jail position
+          currentPlayer.inJail = true;
+          room.gameState.actionLog.push(`${currentPlayer.name} was sent to Jail`);
+        }
+      }
     }
 
-    // Update action log
+    // Update action log for the dice roll and movement
     room.gameState.actionLog.push(`${currentPlayer.name} rolled ${dice[0]}+${dice[1]} and moved to position ${newPosition}${propertyMessage}`);
 
     // Save to Redis

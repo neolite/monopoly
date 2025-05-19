@@ -75,7 +75,11 @@ export default function ActionPanel({
 
         {/* Property info if on property */}
         {property && (
-          <div className="p-3 bg-yellow-50 rounded-lg">
+          <div className={`p-3 rounded-lg ${
+            property.owner === null && isCurrentTurn && gameState.gamePhase === 'property-decision'
+              ? 'bg-green-100 border-2 border-green-300'
+              : 'bg-yellow-50'
+          }`}>
             <h3 className="font-semibold text-yellow-800">Current Property:</h3>
             <p className="text-yellow-700">{property.name}</p>
             <p className="text-yellow-700">Price: ${property.price}</p>
@@ -84,6 +88,16 @@ export default function ActionPanel({
                 ? gameState.players.find(p => p.id === property.owner)?.name || 'Unknown'
                 : 'None'}
             </p>
+            {property.owner === null && isCurrentTurn && gameState.gamePhase === 'property-decision' && (
+              <div className="mt-2 text-sm text-green-800 font-semibold">
+                This property is available for purchase!
+              </div>
+            )}
+            {property.owner && property.owner !== currentPlayer.id && (
+              <div className="mt-2 text-sm text-red-800 font-semibold">
+                Rent: ${property.rent[property.houses]}
+              </div>
+            )}
           </div>
         )}
 
