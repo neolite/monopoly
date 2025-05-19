@@ -20,7 +20,7 @@ export default function GameLog({ actionLog }: GameLogProps) {
     <div className="bg-white p-4 rounded-lg shadow-lg">
       <h2 className="text-xl font-bold text-blue-800 mb-4">Game Log</h2>
 
-      <div className="h-32 overflow-y-auto bg-gray-50 p-3 rounded-lg">
+      <div className="h-40 overflow-y-auto bg-gray-50 p-3 rounded-lg">
         {actionLog.length === 0 ? (
           <p className="text-gray-500 italic">No actions yet...</p>
         ) : (

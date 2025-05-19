@@ -439,19 +439,23 @@ export default function Game() {
             )}
           </div>
         ) : (
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div className="lg:col-span-2 space-y-6">
-              <GameBoard gameState={gameState} />
-              <GameLog actionLog={gameState?.actionLog || []} />
-            </div>
-
-            <div className="space-y-6">
+          <div className="grid grid-cols-[minmax(200px,260px)_1fr_minmax(200px,260px)] grid-rows-[1fr_auto] gap-6">
+            {/* PlayerInfo - Left Column */}
+            <div className="self-start">
               <PlayerInfo
                 players={gameState?.players || []}
                 currentPlayerId={currentPlayer?.id || ''}
                 currentPlayerIndex={gameState?.currentPlayerIndex || 0}
               />
+            </div>
 
+            {/* GameBoard - Center Column */}
+            <div className="justify-self-center w-full">
+              <GameBoard gameState={gameState} />
+            </div>
+
+            {/* ActionPanel - Right Column */}
+            <div className="self-start">
               <ActionPanel
                 gameState={gameState}
                 isCurrentTurn={isCurrentPlayerTurn()}
@@ -459,6 +463,11 @@ export default function Game() {
                 onBuyProperty={handleBuyProperty}
                 onEndTurn={handleEndTurn}
               />
+            </div>
+
+            {/* GameLog - Full Width Bottom Row */}
+            <div className="col-span-3">
+              <GameLog actionLog={gameState?.actionLog || []} />
             </div>
           </div>
         )}
