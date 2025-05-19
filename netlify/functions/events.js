@@ -4,7 +4,7 @@ const Redis = require('ioredis');
 // Initialize Redis client
 const redisClient = new Redis(process.env.REDIS_URL || 'redis://localhost:6379');
 
-// Implement short polling for events instead of SSE
+// Implement Server-Sent Events (SSE)
 exports.handler = async (event, context) => {
   // Only allow GET requests
   if (event.httpMethod !== 'GET') {
@@ -26,18 +26,47 @@ exports.handler = async (event, context) => {
     // Get events from Redis
     const events = await getEventsFromRedis(clientId, lastEventId);
 
-    // Return events as JSON response
+    // Format events as SSE
+    let sseData = '';
+
+    // Add initial connection event if this is a new connection
+    if (lastEventId === '0') {
+      const connectedEvent = {
+        type: 'connected',
+        payload: { clientId }
+      };
+      sseData += `data: ${JSON.stringify(connectedEvent)}\n\n`;
+    }
+
+    // Add all events from Redis
+    for (const event of events) {
+      sseData += `id: ${event.id}\n`;
+      sseData += `data: ${JSON.stringify({ type: event.type, payload: event.payload })}\n\n`;
+    }
+
+    // If no events, add a ping event
+    if (events.length === 0 && lastEventId !== '0') {
+      const pingEvent = {
+        type: 'ping',
+        payload: { clientId }
+      };
+      const pingId = Date.now();
+      sseData += `id: ${pingId}\n`;
+      sseData += `data: ${JSON.stringify(pingEvent)}\n\n`;
+    }
+
+    // Return events as SSE response
     return {
       statusCode: 200,
       headers: {
-        'Content-Type': 'application/json',
-        'Cache-Control': 'no-cache',
-        'Access-Control-Allow-Origin': '*'
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache, no-transform',
+        'Connection': 'keep-alive',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Headers': 'Last-Event-ID, Cache-Control',
+        'X-Accel-Buffering': 'no' // Disable Nginx buffering
       },
-      body: JSON.stringify({
-        clientId,
-        events
-      })
+      body: sseData
     };
   } catch (error) {
     console.error('Error fetching events:', error);
