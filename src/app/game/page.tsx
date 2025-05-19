@@ -440,8 +440,9 @@ export default function Game() {
           </div>
         ) : (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div className="lg:col-span-2">
+            <div className="lg:col-span-2 space-y-6">
               <GameBoard gameState={gameState} />
+              <GameLog actionLog={gameState?.actionLog || []} />
             </div>
 
             <div className="space-y-6">
@@ -458,24 +459,6 @@ export default function Game() {
                 onBuyProperty={handleBuyProperty}
                 onEndTurn={handleEndTurn}
               />
-
-              <GameLog actionLog={gameState?.actionLog || []} />
-
-              {/* Add a button for host to manually trigger AI turn if needed */}
-              {isHost && gameState && gameState.players[gameState.currentPlayerIndex]?.isAI && (
-                <div className="bg-white p-4 rounded-lg shadow-lg">
-                  <h3 className="text-lg font-semibold text-red-800 mb-2">Host Controls</h3>
-                  <p className="text-sm text-gray-600 mb-2">
-                    If the AI player's turn is stuck, you can manually trigger it:
-                  </p>
-                  <button
-                    onClick={handleTriggerAITurn}
-                    className="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline transition duration-300"
-                  >
-                    Force AI Turn
-                  </button>
-                </div>
-              )}
             </div>
           </div>
         )}
