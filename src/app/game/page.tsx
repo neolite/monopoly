@@ -209,24 +209,42 @@ export default function Game() {
 
   const handleBuyProperty = async () => {
     if (!roomId || !gameState || !currentPlayer) {
+      console.log('Cannot buy property: missing roomId, gameState, or currentPlayer');
       return;
     }
+
+    console.log('Attempting to buy property:');
+    console.log('- Current player position:', currentPlayer.position);
+    console.log('- Game state has properties:', gameState.properties.length);
 
     // Find property at current position
     const property = gameState.properties.find(p => p.position === currentPlayer.position);
 
     if (!property) {
+      console.log('No property found at current position:', currentPlayer.position);
+      console.log('Available properties:', gameState.properties.map(p => `${p.name} (position: ${p.position})`));
+
+      // Show an alert to the user
+      alert('Cannot buy property: No property at current position');
       return;
     }
 
+    console.log('Found property to buy:', property.name);
+    console.log('- Property ID:', property.id);
+    console.log('- Property price:', property.price);
+    console.log('- Player money:', currentPlayer.money);
+
     try {
       const clientId = getClientId();
-      await apiRequest(`/api/rooms/${roomId}/buy-property`, 'POST', {
+      console.log('Sending buy property request with clientId:', clientId);
+      const response = await apiRequest(`/api/rooms/${roomId}/buy-property`, 'POST', {
         clientId,
         propertyId: property.id
       });
+      console.log('Buy property response:', response);
     } catch (error) {
       console.error('Error buying property:', error);
+      alert(`Error buying property: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   };
 

@@ -36,6 +36,27 @@ export const initializeSSE = (): string => {
         const { type, payload } = data;
         console.log(`Parsed SSE event: type=${type}`, payload);
 
+        // Log game state details if it's a gameStateUpdated event
+        if (type === 'gameStateUpdated' && payload.gameState) {
+          console.log('Game state details:');
+          console.log('- Game phase:', payload.gameState.gamePhase);
+          console.log('- Current player index:', payload.gameState.currentPlayerIndex);
+          console.log('- Current player position:', payload.gameState.players[payload.gameState.currentPlayerIndex]?.position);
+
+          // Check if current player is on a property
+          const currentPlayer = payload.gameState.players[payload.gameState.currentPlayerIndex];
+          if (currentPlayer) {
+            const property = payload.gameState.properties.find(p => p.position === currentPlayer.position);
+            if (property) {
+              console.log('- Property at current position:', property.name);
+              console.log('- Property owner:', property.owner);
+              console.log('- Property price:', property.price);
+            } else {
+              console.log('- No property at current position');
+            }
+          }
+        }
+
         if (eventHandlers[type]) {
           console.log(`Found ${eventHandlers[type].length} handlers for event type: ${type}`);
           eventHandlers[type].forEach(handler => {

@@ -26,7 +26,7 @@ export interface Property {
   mortgaged: boolean;
 }
 
-export type PropertyGroup = 
+export type PropertyGroup =
   | 'brown'
   | 'light-blue'
   | 'pink'
@@ -49,10 +49,11 @@ export interface GameState {
   actionLog: string[];
 }
 
-export type GamePhase = 
+export type GamePhase =
   | 'waiting'
   | 'rolling'
   | 'moving'
+  | 'rolled'
   | 'property-decision'
   | 'paying-rent'
   | 'end-turn'
@@ -74,7 +75,7 @@ export interface Card {
   action: CardAction;
 }
 
-export type CardAction = 
+export type CardAction =
   | { type: 'move', destination: number }
   | { type: 'pay', amount: number }
   | { type: 'collect', amount: number }

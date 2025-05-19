@@ -343,11 +343,19 @@ app.post('/api/rooms/:roomId/start', async (req: Request<RoomIdParam, {}, Client
     return res.status(400).json({ error: 'Need at least 2 players to start the game' });
   }
 
+  // Import properties from the board module
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { properties } = require('../src/lib/game/board');
+
+  // Create a deep copy of the properties to avoid reference issues
+  const initialProperties = JSON.parse(JSON.stringify(properties));
+  console.log(`Initialized ${initialProperties.length} properties for the game`);
+
   // Initialize game state
   const gameState: GameState = {
     id: uuidv4(),
     players: room.players,
-    properties: [], // Will be initialized with actual properties
+    properties: initialProperties,
     currentPlayerIndex: 0,
     dice: [0, 0],
     gamePhase: 'waiting',
@@ -398,14 +406,53 @@ app.post('/api/rooms/:roomId/roll-dice', async (req: Request<RoomIdParam, {}, Cl
 
   // Update game state
   room.gameState.dice = dice;
+  room.gameState.gamePhase = 'rolled';
 
   // Move player
   const oldPosition = currentPlayer.position;
   const newPosition = (oldPosition + dice[0] + dice[1]) % 40;
   currentPlayer.position = newPosition;
 
+  // Check if player landed on a property
+  let propertyMessage = '';
+  const property = room.gameState.properties.find(p => p.position === newPosition);
+
+  if (property) {
+    propertyMessage = ` and landed on ${property.name}`;
+
+    // Check if property is owned by another player
+    if (property.owner && property.owner !== currentPlayer.id) {
+      // Find owner
+      const owner = room.gameState.players.find(p => p.id === property.owner);
+
+      if (owner) {
+        // Calculate rent (simplified for now)
+        const rentAmount = property.rent[0]; // Basic rent
+
+        // Pay rent
+        currentPlayer.money -= rentAmount;
+        owner.money += rentAmount;
+
+        // Update action log
+        room.gameState.actionLog.push(`${currentPlayer.name} paid $${rentAmount} rent to ${owner.name} for ${property.name}`);
+
+        // Set game phase to end-turn
+        room.gameState.gamePhase = 'end-turn';
+      }
+    } else if (!property.owner) {
+      // Property is not owned, set game phase to property-decision
+      room.gameState.gamePhase = 'property-decision';
+    } else {
+      // Property is owned by current player, set game phase to end-turn
+      room.gameState.gamePhase = 'end-turn';
+    }
+  } else {
+    // Not a property, set game phase to end-turn
+    room.gameState.gamePhase = 'end-turn';
+  }
+
   // Update action log
-  room.gameState.actionLog.push(`${currentPlayer.name} rolled ${dice[0]}+${dice[1]} and moved to position ${newPosition}`);
+  room.gameState.actionLog.push(`${currentPlayer.name} rolled ${dice[0]}+${dice[1]} and moved to position ${newPosition}${propertyMessage}`);
 
   // Save to Redis
   await saveRoom(room);
@@ -451,6 +498,70 @@ app.post('/api/rooms/:roomId/end-turn', async (req: Request<RoomIdParam, {}, Cli
   sendEvent('gameStateUpdated', { gameState: room.gameState }, roomId);
 
   res.json({ success: true, nextPlayerId: nextPlayer.id });
+});
+
+// Buy property endpoint
+app.post('/api/rooms/:roomId/buy-property', async (req: Request<RoomIdParam, {}, { clientId: string, propertyId: number }>, res: Response) => {
+  const { roomId } = req.params;
+  const { clientId, propertyId } = req.body;
+
+  const room = await getRoom(roomId);
+
+  if (!room || !room.gameStarted || !room.gameState) {
+    return res.status(400).json({ error: 'Game not started' });
+  }
+
+  // Check if it's the player's turn
+  const currentPlayer = room.gameState.players[room.gameState.currentPlayerIndex];
+  if (currentPlayer.id !== clientId) {
+    return res.status(403).json({ error: 'Not your turn' });
+  }
+
+  // Find the property
+  const property = room.gameState.properties.find(p => p.id === propertyId);
+  if (!property) {
+    return res.status(404).json({ error: 'Property not found' });
+  }
+
+  // Check if property is available
+  if (property.owner !== null) {
+    return res.status(400).json({ error: 'Property already owned' });
+  }
+
+  // Check if player has enough money
+  if (currentPlayer.money < property.price) {
+    return res.status(400).json({ error: 'Not enough money' });
+  }
+
+  // Buy property
+  currentPlayer.money -= property.price;
+  property.owner = currentPlayer.id;
+
+  // Add property to player's properties array
+  if (!currentPlayer.properties) {
+    currentPlayer.properties = [];
+  }
+  currentPlayer.properties.push(property);
+
+  // Update action log
+  room.gameState.actionLog.push(`${currentPlayer.name} bought ${property.name} for $${property.price}`);
+  room.gameState.gamePhase = 'end-turn';
+
+  // Save to Redis
+  await saveRoom(room);
+  await saveGameState(room.gameState);
+
+  // Send SSE events
+  sendEvent('propertyPurchased', {
+    playerId: currentPlayer.id,
+    propertyId: property.id,
+    propertyName: property.name,
+    price: property.price
+  }, roomId);
+
+  sendEvent('gameStateUpdated', { gameState: room.gameState }, roomId);
+
+  res.json({ success: true, property });
 });
 
 // Client disconnect handler

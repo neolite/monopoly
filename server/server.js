@@ -167,7 +167,22 @@ const calculateRent = (gameState, property) => {
 // Helper function to get special space at a position
 const getSpecialSpace = (position) => {
   // Import special spaces from the board module
-  const { specialSpaces } = require('../src/lib/game/board');
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  // const { specialSpaces } = require(path.join(__dirname, '..', 'src', 'lib', 'game', 'board'));
+ const specialSpaces = [
+  { position: 0, type: 'go', name: 'GO' },
+  { position: 2, type: 'community-chest', name: 'Community Chest' },
+  { position: 4, type: 'tax', name: 'Income Tax', amount: 200 },
+  { position: 7, type: 'chance', name: 'Chance' },
+  { position: 10, type: 'jail', name: 'Jail' },
+  { position: 17, type: 'community-chest', name: 'Community Chest' },
+  { position: 20, type: 'free-parking', name: 'Free Parking' },
+  { position: 22, type: 'chance', name: 'Chance' },
+  { position: 30, type: 'go-to-jail', name: 'Go To Jail' },
+  { position: 33, type: 'community-chest', name: 'Community Chest' },
+  { position: 36, type: 'chance', name: 'Chance' },
+  { position: 38, type: 'tax', name: 'Luxury Tax', amount: 100 }
+];
 
   return specialSpaces.find(s => s.position === position);
 };
@@ -489,11 +504,18 @@ app.post('/api/rooms/:roomId/start', async (req, res) => {
   }
 
   // Import properties from the board module
-  const { properties } = require('../src/lib/game/board');
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { properties } = require('./data.js');
 
   // Create a deep copy of the properties to avoid reference issues
   const initialProperties = JSON.parse(JSON.stringify(properties));
   console.log(`Initialized ${initialProperties.length} properties for the game`);
+
+  // Log the first few properties to verify they're initialized correctly
+  console.log('Sample properties:');
+  initialProperties.slice(0, 3).forEach(property => {
+    console.log(`- ${property.name}: position=${property.position}, price=${property.price}, owner=${property.owner}`);
+  });
 
   const gameState = {
     id: uuidv4(),
@@ -629,6 +651,7 @@ app.post('/api/rooms/:roomId/roll-dice', async (req, res) => {
       }
     } else if (!property.owner) {
       // Property is not owned, set game phase to property-decision
+      console.log(`Setting game phase to property-decision for property ${property.name}`);
       room.gameState.gamePhase = 'property-decision';
     } else {
       // Property is owned by current player, set game phase to end-turn
@@ -717,7 +740,7 @@ app.post('/api/rooms/:roomId/end-turn', async (req, res) => {
   }
 
   // Check if the player has rolled the dice
-  if (room.gameState.gamePhase !== 'rolled') {
+  if (room.gameState.gamePhase !== 'rolled' && room.gameState.gamePhase !== 'end-turn' && room.gameState.gamePhase !== 'property-decision') {
     console.log('Player has not rolled the dice yet');
     return res.status(400).json({ error: 'You must roll the dice before ending your turn' });
   }
@@ -784,11 +807,21 @@ app.post('/api/rooms/:roomId/buy-property', async (req, res) => {
   }
 
   // Find the property
+  console.log(`Looking for property with ID ${propertyId}`);
+  console.log(`Game state has ${room.gameState.properties.length} properties`);
+
+  // Log a few properties to debug
+  room.gameState.properties.slice(0, 3).forEach(p => {
+    console.log(`- Property: id=${p.id}, name=${p.name}, position=${p.position}`);
+  });
+
   const property = room.gameState.properties.find(p => p.id === propertyId);
   if (!property) {
     console.log(`Property ${propertyId} not found`);
     return res.status(404).json({ error: 'Property not found' });
   }
+
+  console.log(`Found property: ${property.name} at position ${property.position}`);
 
   // Check if property is available
   if (property.owner !== null) {
