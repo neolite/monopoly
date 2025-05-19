@@ -4,71 +4,118 @@ const Redis = require('ioredis');
 // Initialize Redis client
 const redisClient = new Redis(process.env.REDIS_URL || 'redis://localhost:6379');
 
-// Connected SSE clients (in-memory, will be lost on function restart)
-const clients = new Map();
-
-// Helper function to send SSE event
-const sendEvent = (res, type, payload) => {
-  res.write(`data: ${JSON.stringify({ type, payload })}\n\n`);
-};
-
-// Subscribe to Redis channel for events
-const subscribeToEvents = async (res, clientId) => {
-  const subscriber = new Redis(process.env.REDIS_URL || 'redis://localhost:6379');
-  
-  // Subscribe to all events and room-specific events
-  await subscriber.subscribe('monopoly:events');
-  await subscriber.subscribe(`monopoly:events:client:${clientId}`);
-  
-  subscriber.on('message', (channel, message) => {
-    try {
-      const data = JSON.parse(message);
-      sendEvent(res, data.type, data.payload);
-    } catch (error) {
-      console.error('Error parsing Redis message:', error);
-    }
-  });
-  
-  return subscriber;
-};
-
+// Implement short polling for events instead of SSE
 exports.handler = async (event, context) => {
   // Only allow GET requests
   if (event.httpMethod !== 'GET') {
     return {
       statusCode: 405,
-      body: 'Method Not Allowed',
+      body: JSON.stringify({ error: 'Method Not Allowed' }),
+      headers: {
+        'Content-Type': 'application/json'
+      }
     };
   }
-  
+
   // Parse query parameters
   const params = new URLSearchParams(event.queryStringParameters || {});
   const clientId = params.get('clientId') || uuidv4();
-  
-  // Set up SSE response
-  const headers = {
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache',
-    'Connection': 'keep-alive',
-    'X-Accel-Buffering': 'no',
-  };
-  
-  // Create response object
-  const response = {
-    statusCode: 200,
-    headers,
-    body: '',
-    isBase64Encoded: false,
-  };
-  
-  // Set up Redis subscriber
-  const subscriber = await subscribeToEvents(response, clientId);
-  
-  // Send initial connection message
-  sendEvent(response, 'connected', { clientId });
-  
-  // Clean up on disconnect
-  context.callbackWaitsForEmptyEventLoop = false;
-  
-  return response;
+  const lastEventId = params.get('lastEventId') || '0';
+
+  try {
+    // Get events from Redis
+    const events = await getEventsFromRedis(clientId, lastEventId);
+
+    // Return events as JSON response
+    return {
+      statusCode: 200,
+      headers: {
+        'Content-Type': 'application/json',
+        'Cache-Control': 'no-cache',
+        'Access-Control-Allow-Origin': '*'
+      },
+      body: JSON.stringify({
+        clientId,
+        events
+      })
+    };
+  } catch (error) {
+    console.error('Error fetching events:', error);
+    return {
+      statusCode: 500,
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ error: 'Internal Server Error' })
+    };
+  }
 };
+
+// Get events from Redis
+async function getEventsFromRedis(clientId, lastEventId) {
+  // Convert lastEventId to number
+  const lastId = parseInt(lastEventId, 10);
+
+  // Get global events
+  const globalEvents = await redisClient.zrangebyscore(
+    'monopoly:events:sorted',
+    lastId + 1,
+    '+inf',
+    'WITHSCORES'
+  );
+
+  // Get client-specific events
+  const clientEvents = await redisClient.zrangebyscore(
+    `monopoly:events:client:${clientId}:sorted`,
+    lastId + 1,
+    '+inf',
+    'WITHSCORES'
+  );
+
+  // Process events
+  const events = [];
+
+  // Process global events
+  for (let i = 0; i < globalEvents.length; i += 2) {
+    try {
+      const eventData = JSON.parse(globalEvents[i]);
+      const eventId = parseInt(globalEvents[i + 1], 10);
+      events.push({
+        id: eventId,
+        type: eventData.type,
+        payload: eventData.payload
+      });
+    } catch (error) {
+      console.error('Error parsing global event:', error);
+    }
+  }
+
+  // Process client events
+  for (let i = 0; i < clientEvents.length; i += 2) {
+    try {
+      const eventData = JSON.parse(clientEvents[i]);
+      const eventId = parseInt(clientEvents[i + 1], 10);
+      events.push({
+        id: eventId,
+        type: eventData.type,
+        payload: eventData.payload
+      });
+    } catch (error) {
+      console.error('Error parsing client event:', error);
+    }
+  }
+
+  // Sort events by ID
+  events.sort((a, b) => a.id - b.id);
+
+  // If no events, add a ping event
+  if (events.length === 0) {
+    events.push({
+      id: Date.now(),
+      type: 'ping',
+      payload: { clientId }
+    });
+  }
+
+  return events;
+}
