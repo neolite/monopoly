@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { initializeSSE, apiRequest, getClientId, on, off } from '@/lib/socket';
 import { GameState, Player, Room } from '@/types/game';
@@ -10,6 +10,14 @@ import ActionPanel from '@/components/ui/ActionPanel';
 import GameLog from '@/components/ui/GameLog';
 
 export default function Game() {
+  return (
+    <Suspense fallback={<div>Loading...</div>}>
+      <GameContent />
+    </Suspense>
+  );
+}
+
+function GameContent() {
   const searchParams = useSearchParams();
   const roomId = searchParams.get('roomId');
 
