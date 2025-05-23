@@ -18,6 +18,7 @@ This project is a digital implementation of the Monopoly board game, featuring:
 - **Frontend**: React with Next.js for server-side rendering and routing
 - **Backend**: Node.js with Express
 - **Real-time Communication**: Server-Sent Events (SSE) for efficient one-way real-time updates
+- **Testing**: Cypress for end-to-end testing
 - **Data Storage**: Redis for game state persistence
 - **Styling**: Tailwind CSS for responsive design
 - **Deployment**: Netlify for frontend and backend deployment
@@ -69,6 +70,24 @@ This project is a digital implementation of the Monopoly board game, featuring:
    This command starts both the Next.js frontend and the Express backend server.
 
 5. Open your browser and navigate to `http://localhost:3000`
+
+### Running Tests
+
+1. Run end-to-end tests with Cypress:
+   ```bash
+   npm run cypress:run
+   ```
+
+2. Open Cypress Test Runner for interactive testing:
+   ```bash
+   npm run cypress:open
+   ```
+
+3. Run tests with the development server:
+   ```bash
+   npm run test:e2e
+   ```
+   This command starts the development server and runs the Cypress tests against it.
 
 ### Deployment to Netlify
 
@@ -148,7 +167,13 @@ The development process followed these key steps:
    - Implemented player information panels and action controls
    - Designed the game log interface for tracking game events
 
-4. **Backend Development**:
+4. **Testing and Quality Assurance**:
+   - Implemented end-to-end tests using Cypress
+   - Created test scenarios for core game mechanics
+   - Added specific tests for edge cases like bankruptcy and jail
+   - Ensured proper handling of game state transitions
+
+5. **Backend Development**:
    - Developed the Express server with SSE endpoints
    - Implemented the core game logic for movement, property management, and turn handling
    - Created Redis integration for data persistence

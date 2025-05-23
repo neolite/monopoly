@@ -589,6 +589,66 @@ app.post('/api/rooms/:roomId/roll-dice', async (req, res) => {
     return res.status(400).json({ error: 'You have already rolled the dice' });
   }
 
+  // Handle player in jail
+  if (currentPlayer.inJail) {
+    console.log(`Player ${currentPlayer.name} is in jail`);
+
+    // Roll dice
+    const dice = [
+      Math.floor(Math.random() * 6) + 1,
+      Math.floor(Math.random() * 6) + 1
+    ];
+    console.log(`Dice roll for jail: ${dice[0]}, ${dice[1]}`);
+
+    // Update game state
+    room.gameState.dice = dice;
+
+    // Check if player rolled doubles
+    if (dice[0] === dice[1]) {
+      // Player gets out of jail
+      currentPlayer.inJail = false;
+      room.gameState.actionLog.push(`${currentPlayer.name} rolled doubles and got out of jail!`);
+      console.log(`Player ${currentPlayer.name} rolled doubles and got out of jail`);
+
+      // Continue with normal turn
+      room.gameState.gamePhase = 'rolled';
+
+      // Move player
+      const oldPosition = currentPlayer.position;
+      const newPosition = (oldPosition + dice[0] + dice[1]) % 40;
+      currentPlayer.position = newPosition;
+      console.log(`Player moved from ${oldPosition} to ${newPosition}`);
+
+      // Check if player passed GO
+      if (newPosition < oldPosition && newPosition !== 30) {
+        // Player passed GO, collect $200
+        currentPlayer.money += 200;
+        room.gameState.actionLog.push(`${currentPlayer.name} passed GO and collected $200`);
+        console.log(`Player ${currentPlayer.name} passed GO and collected $200`);
+      }
+    } else {
+      // Player stays in jail
+      room.gameState.actionLog.push(`${currentPlayer.name} did not roll doubles and stays in jail.`);
+      console.log(`Player ${currentPlayer.name} did not roll doubles and stays in jail`);
+      room.gameState.gamePhase = 'end-turn';
+
+      // Save to Redis
+      await saveRoom(room);
+      await saveGameState(room.gameState);
+
+      // Send SSE events
+      console.log('Sending diceRolled event');
+      sendEvent('diceRolled', { playerId: currentPlayer.id, dice }, roomId);
+
+      console.log('Sending gameStateUpdated event');
+      sendEvent('gameStateUpdated', { gameState: room.gameState }, roomId);
+
+      return res.json({ success: true, dice, inJail: true });
+    }
+
+    // If we get here, the player got out of jail and continues their turn
+  }
+
   // Roll dice
   const dice = [
     Math.floor(Math.random() * 6) + 1,
@@ -605,6 +665,14 @@ app.post('/api/rooms/:roomId/roll-dice', async (req, res) => {
   const newPosition = (oldPosition + dice[0] + dice[1]) % 40;
   currentPlayer.position = newPosition;
   console.log(`Player moved from ${oldPosition} to ${newPosition}`);
+
+  // Check if player passed GO
+  if (newPosition < oldPosition && newPosition !== 30) { // 30 is Go To Jail
+    // Player passed GO, collect $200
+    currentPlayer.money += 200;
+    room.gameState.actionLog.push(`${currentPlayer.name} passed GO and collected $200`);
+    console.log(`Player ${currentPlayer.name} passed GO and collected $200`);
+  }
 
   // Check if player landed on a property
   let propertyMessage = '';
@@ -635,7 +703,34 @@ app.post('/api/rooms/:roomId/roll-dice', async (req, res) => {
         if (currentPlayer.money < 0) {
           console.log(`Player ${currentPlayer.name} is bankrupt`);
           currentPlayer.bankrupt = true;
-          room.gameState.actionLog.push(`${currentPlayer.name} went bankrupt!`);
+          room.gameState.actionLog.push(`${currentPlayer.name} went bankrupt to ${owner.name}!`);
+
+          // Transfer all properties to the creditor
+          const playerProperties = room.gameState.properties.filter(p => p.owner === currentPlayer.id);
+          console.log(`Transferring ${playerProperties.length} properties from ${currentPlayer.name} to ${owner.name}`);
+
+          playerProperties.forEach(prop => {
+            // Update property owner
+            prop.owner = owner.id;
+
+            // Add to creditor's properties array
+            if (!owner.properties) {
+              owner.properties = [];
+            }
+
+            // Create a deep copy of the property to avoid reference issues
+            const propertyCopy = JSON.parse(JSON.stringify(prop));
+            owner.properties.push(propertyCopy);
+          });
+
+          // Clear bankrupt player's properties
+          currentPlayer.properties = [];
+
+          // Transfer any remaining money (if somehow positive)
+          if (currentPlayer.money > 0) {
+            owner.money += currentPlayer.money;
+            currentPlayer.money = 0;
+          }
 
           // Check if game is over (only one player left)
           const activePlayers = room.gameState.players.filter(p => !p.bankrupt);
@@ -673,9 +768,24 @@ app.post('/api/rooms/:roomId/roll-dice', async (req, res) => {
 
         // Check for bankruptcy
         if (currentPlayer.money < 0) {
-          console.log(`Player ${currentPlayer.name} is bankrupt`);
+          console.log(`Player ${currentPlayer.name} is bankrupt from tax`);
           currentPlayer.bankrupt = true;
-          room.gameState.actionLog.push(`${currentPlayer.name} went bankrupt!`);
+          room.gameState.actionLog.push(`${currentPlayer.name} went bankrupt due to taxes!`);
+
+          // Clear bankrupt player's properties and make them available again
+          const playerProperties = room.gameState.properties.filter(p => p.owner === currentPlayer.id);
+          console.log(`Releasing ${playerProperties.length} properties from bankrupt ${currentPlayer.name}`);
+
+          playerProperties.forEach(prop => {
+            // Make property available again
+            prop.owner = null;
+            prop.houses = 0;
+            prop.mortgaged = false;
+          });
+
+          // Clear bankrupt player's properties
+          currentPlayer.properties = [];
+          currentPlayer.money = 0;
 
           // Check if game is over (only one player left)
           const activePlayers = room.gameState.players.filter(p => !p.bankrupt);
@@ -844,7 +954,10 @@ app.post('/api/rooms/:roomId/buy-property', async (req, res) => {
   if (!currentPlayer.properties) {
     currentPlayer.properties = [];
   }
-  currentPlayer.properties.push(property);
+
+  // Create a deep copy of the property to avoid reference issues
+  const propertyCopy = JSON.parse(JSON.stringify(property));
+  currentPlayer.properties.push(propertyCopy);
 
   // Update action log
   room.gameState.actionLog.push(`${currentPlayer.name} bought ${property.name} for $${property.price}`);
@@ -898,22 +1011,139 @@ const handleAITurn = async (roomId) => {
 
     console.log(`[AI TURN] AI player ${currentPlayer.name} is taking its turn`);
 
-    // AI rolls dice
-    const dice = [
-      Math.floor(Math.random() * 6) + 1,
-      Math.floor(Math.random() * 6) + 1
-    ];
-    console.log(`[AI TURN] AI rolled dice: ${dice[0]}, ${dice[1]}`);
+    // Handle AI player in jail
+    if (currentPlayer.inJail) {
+      console.log(`[AI TURN] AI player ${currentPlayer.name} is in jail`);
 
-    // Update game state
-    room.gameState.dice = dice;
-    room.gameState.gamePhase = 'rolled';
+      // AI rolls dice
+      const dice = [
+        Math.floor(Math.random() * 6) + 1,
+        Math.floor(Math.random() * 6) + 1
+      ];
+      console.log(`[AI TURN] AI rolled dice for jail: ${dice[0]}, ${dice[1]}`);
+
+      // Update game state
+      room.gameState.dice = dice;
+
+      // Check if AI rolled doubles
+      if (dice[0] === dice[1]) {
+        // AI gets out of jail
+        currentPlayer.inJail = false;
+        room.gameState.actionLog.push(`${currentPlayer.name} rolled doubles and got out of jail!`);
+        console.log(`[AI TURN] AI player ${currentPlayer.name} rolled doubles and got out of jail`);
+
+        // Continue with normal turn
+        room.gameState.gamePhase = 'rolled';
+
+        // Move AI player
+        const oldPosition = currentPlayer.position;
+        const newPosition = (oldPosition + dice[0] + dice[1]) % 40;
+        currentPlayer.position = newPosition;
+        console.log(`[AI TURN] AI moved from ${oldPosition} to ${newPosition}`);
+
+        // Check if AI passed GO
+        if (newPosition < oldPosition && newPosition !== 30) {
+          // AI passed GO, collect $200
+          currentPlayer.money += 200;
+          room.gameState.actionLog.push(`${currentPlayer.name} passed GO and collected $200`);
+          console.log(`[AI TURN] AI player ${currentPlayer.name} passed GO and collected $200`);
+        }
+      } else {
+        // AI stays in jail
+        room.gameState.actionLog.push(`${currentPlayer.name} did not roll doubles and stays in jail.`);
+        console.log(`[AI TURN] AI player ${currentPlayer.name} did not roll doubles and stays in jail`);
+
+        // Save to Redis
+        await saveRoom(room);
+        await saveGameState(room.gameState);
+
+        // Send SSE events
+        console.log('[AI TURN] Sending diceRolled event for AI in jail');
+        sendEvent('diceRolled', { playerId: currentPlayer.id, dice }, roomId);
+
+        console.log('[AI TURN] Sending gameStateUpdated event for AI in jail');
+        sendEvent('gameStateUpdated', { gameState: room.gameState }, roomId);
+
+        // End AI turn after a delay
+        console.log('[AI TURN] Scheduling end of AI turn from jail');
+
+        // Use a promise with setTimeout to handle the async operation properly
+        await new Promise(resolve => {
+          setTimeout(async () => {
+            try {
+              // Move to next player
+              room.gameState.currentPlayerIndex = (room.gameState.currentPlayerIndex + 1) % room.gameState.players.length;
+              const nextPlayer = room.gameState.players[room.gameState.currentPlayerIndex];
+              console.log(`[AI TURN] Turn passed from ${currentPlayer.name} in jail to ${nextPlayer.name}`);
+
+              // Reset game phase for the next player
+              room.gameState.gamePhase = 'waiting';
+
+              // Update action log
+              room.gameState.actionLog.push(`${currentPlayer.name} ended their turn. ${nextPlayer.name}'s turn now.`);
+
+              // Save to Redis
+              await saveRoom(room);
+              await saveGameState(room.gameState);
+
+              // Send SSE events
+              console.log('[AI TURN] Sending turnEnded event for AI in jail');
+              sendEvent('turnEnded', { nextPlayerId: nextPlayer.id }, roomId);
+
+              console.log('[AI TURN] Sending gameStateUpdated event for AI in jail');
+              sendEvent('gameStateUpdated', { gameState: room.gameState }, roomId);
+
+              // If next player is also AI, trigger its turn after a delay
+              if (nextPlayer.isAI) {
+                console.log(`[AI TURN] Next player ${nextPlayer.name} is also AI, scheduling its turn`);
+                setTimeout(() => {
+                  try {
+                    handleAITurn(roomId).catch(err => {
+                      console.error('[AI TURN] Error in recursive AI turn from jail:', err);
+                    });
+                  } catch (error) {
+                    console.error('[AI TURN] Error scheduling next AI turn from jail:', error);
+                  }
+                }, 2000);
+              }
+
+              resolve();
+            } catch (error) {
+              console.error('[AI TURN] Error ending AI turn from jail:', error);
+              resolve(); // Resolve anyway to prevent hanging
+            }
+          }, 3000);
+        });
+
+        return; // Exit the function early
+      }
+    } else {
+      // Normal AI turn (not in jail)
+      // AI rolls dice
+      const dice = [
+        Math.floor(Math.random() * 6) + 1,
+        Math.floor(Math.random() * 6) + 1
+      ];
+      console.log(`[AI TURN] AI rolled dice: ${dice[0]}, ${dice[1]}`);
+
+      // Update game state
+      room.gameState.dice = dice;
+      room.gameState.gamePhase = 'rolled';
+    }
 
     // Move player
     const oldPosition = currentPlayer.position;
     const newPosition = (oldPosition + dice[0] + dice[1]) % 40;
     currentPlayer.position = newPosition;
     console.log(`[AI TURN] AI moved from ${oldPosition} to ${newPosition}`);
+
+    // Check if player passed GO
+    if (newPosition < oldPosition && newPosition !== 30) { // 30 is Go To Jail
+      // Player passed GO, collect $200
+      currentPlayer.money += 200;
+      room.gameState.actionLog.push(`${currentPlayer.name} passed GO and collected $200`);
+      console.log(`[AI TURN] AI player ${currentPlayer.name} passed GO and collected $200`);
+    }
 
     // Check if player landed on a property
     let propertyMessage = '';
@@ -944,7 +1174,34 @@ const handleAITurn = async (roomId) => {
           if (currentPlayer.money < 0) {
             console.log(`[AI TURN] AI player ${currentPlayer.name} is bankrupt`);
             currentPlayer.bankrupt = true;
-            room.gameState.actionLog.push(`${currentPlayer.name} went bankrupt!`);
+            room.gameState.actionLog.push(`${currentPlayer.name} went bankrupt to ${owner.name}!`);
+
+            // Transfer all properties to the creditor
+            const playerProperties = room.gameState.properties.filter(p => p.owner === currentPlayer.id);
+            console.log(`[AI TURN] Transferring ${playerProperties.length} properties from ${currentPlayer.name} to ${owner.name}`);
+
+            playerProperties.forEach(prop => {
+              // Update property owner
+              prop.owner = owner.id;
+
+              // Add to creditor's properties array
+              if (!owner.properties) {
+                owner.properties = [];
+              }
+
+              // Create a deep copy of the property to avoid reference issues
+              const propertyCopy = JSON.parse(JSON.stringify(prop));
+              owner.properties.push(propertyCopy);
+            });
+
+            // Clear bankrupt player's properties
+            currentPlayer.properties = [];
+
+            // Transfer any remaining money (if somehow positive)
+            if (currentPlayer.money > 0) {
+              owner.money += currentPlayer.money;
+              currentPlayer.money = 0;
+            }
 
             // Check if game is over (only one player left)
             const activePlayers = room.gameState.players.filter(p => !p.bankrupt);
@@ -967,7 +1224,10 @@ const handleAITurn = async (roomId) => {
           if (!currentPlayer.properties) {
             currentPlayer.properties = [];
           }
-          currentPlayer.properties.push(property);
+
+          // Create a deep copy of the property to avoid reference issues
+          const propertyCopy = JSON.parse(JSON.stringify(property));
+          currentPlayer.properties.push(propertyCopy);
 
           // Update action log
           room.gameState.actionLog.push(`${currentPlayer.name} bought ${property.name} for $${property.price}`);
@@ -992,9 +1252,24 @@ const handleAITurn = async (roomId) => {
 
           // Check for bankruptcy
           if (currentPlayer.money < 0) {
-            console.log(`[AI TURN] AI player ${currentPlayer.name} is bankrupt`);
+            console.log(`[AI TURN] AI player ${currentPlayer.name} is bankrupt from tax`);
             currentPlayer.bankrupt = true;
-            room.gameState.actionLog.push(`${currentPlayer.name} went bankrupt!`);
+            room.gameState.actionLog.push(`${currentPlayer.name} went bankrupt due to taxes!`);
+
+            // Clear bankrupt player's properties and make them available again
+            const playerProperties = room.gameState.properties.filter(p => p.owner === currentPlayer.id);
+            console.log(`[AI TURN] Releasing ${playerProperties.length} properties from bankrupt ${currentPlayer.name}`);
+
+            playerProperties.forEach(prop => {
+              // Make property available again
+              prop.owner = null;
+              prop.houses = 0;
+              prop.mortgaged = false;
+            });
+
+            // Clear bankrupt player's properties
+            currentPlayer.properties = [];
+            currentPlayer.money = 0;
 
             // Check if game is over (only one player left)
             const activePlayers = room.gameState.players.filter(p => !p.bankrupt);

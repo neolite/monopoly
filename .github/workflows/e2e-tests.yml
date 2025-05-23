@@ -1,0 +1,116 @@
+name: End-to-End Tests
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  e2e-tests:
+    name: Run E2E Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Cypress dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk2.0-0 libgtk-3-0 libgbm-dev libnotify-dev libgconf-2-4 libnss3 libxss1 libasound2 libxtst6 xauth xvfb
+
+      - name: Build application
+        run: npm run build
+
+      - name: Start servers in background
+        run: |
+          npm run server &
+          npm run start &
+          sleep 10 # Give servers time to start
+
+      - name: Run Cypress tests
+        uses: cypress-io/github-action@v5
+        with:
+          browser: chrome
+          headless: true
+          wait-on: 'http://localhost:3000'
+          wait-on-timeout: 120
+          record: false
+
+      - name: Upload Cypress screenshots (if tests fail)
+        uses: actions/upload-artifact@v3
+        if: failure()
+        with:
+          name: cypress-screenshots
+          path: cypress/screenshots
+          retention-days: 5
+
+      - name: Upload Cypress videos
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: cypress-videos
+          path: cypress/videos
+          retention-days: 5
+
+      - name: Generate test report
+        if: always()
+        run: |
+          npm install -g mochawesome-merge mochawesome-report-generator
+          npx mochawesome-merge cypress/results/*.json > cypress/results/report.json
+          npx mochawesome-report-generator cypress/results/report.json --reportDir cypress/reports
+
+      - name: Upload test report
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: test-report
+          path: cypress/reports
+          retention-days: 5
+
+      - name: Comment PR with test results
+        uses: actions/github-script@v6
+        if: always()
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const { issue, repo } = context;
+            
+            // Try to read the test summary if it exists
+            let summary = '';
+            try {
+              if (fs.existsSync('cypress/reports/summary.txt')) {
+                summary = fs.readFileSync('cypress/reports/summary.txt', 'utf8');
+              } else {
+                summary = 'E2E tests completed. Check artifacts for detailed results.';
+              }
+            } catch (error) {
+              summary = 'E2E tests completed. Check artifacts for detailed results.';
+            }
+            
+            // Determine if tests passed or failed
+            const testsPassed = !process.env.CYPRESS_TESTS_FAILED;
+            const status = testsPassed ? '✅ PASSED' : '❌ FAILED';
+            
+            const comment = `## E2E Test Results: ${status}
+            
+            ${summary}
+            
+            [View detailed test report in the workflow artifacts](${context.payload.repository.html_url}/actions/runs/${context.runId})
+            `;
+            
+            github.rest.issues.createComment({
+              issue_number: issue.number,
+              owner: repo.owner,
+              repo: repo.repo,
+              body: comment
+            });
