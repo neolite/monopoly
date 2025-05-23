@@ -9,7 +9,10 @@
     "lint": "next lint",
     "server": "node server/index.js",
     "dev:all": "concurrently \"npm run dev\" \"npm run server\"",
-    "netlify:dev": "netlify dev"
+    "netlify:dev": "netlify dev",
+    "cypress:open": "cypress open",
+    "cypress:run": "cypress run",
+    "test:e2e": "start-server-and-test dev:all http://localhost:3000 cypress:run"
   },
   "dependencies": {
     "cors": "^2.8.5",
@@ -36,9 +39,11 @@
     "@types/react-dom": "^19",
     "@types/uuid": "^9.0.7",
     "concurrently": "^8.2.2",
+    "cypress": "^14.4.0",
     "eslint": "^9",
     "eslint-config-next": "15.3.2",
     "netlify-cli": "^17.15.7",
+    "start-server-and-test": "^2.0.12",
     "tailwindcss": "^4",
     "ts-node": "^10.9.1",
     "typescript": "^5"
